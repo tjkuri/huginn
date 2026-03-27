@@ -5,13 +5,16 @@ NBA prediction backtest and analysis repo. Reads data from sibling repo `../yggd
 ## Project Structure
 
 ```
-config.py              Cache path, vig constants, model config reference
-data/loader.py         Reads paired prediction/result JSON, merges by game_id
-backtest/grader.py     Grades games: V2 (O/U/PUSH/NO_BET) + V1 baseline
-backtest/metrics.py    Aggregates stats: overall, by-confidence/direction/gap, calibration
-backtest/report.py     Rich terminal output
-scripts/run_backtest.py  CLI entry point (--days, --team, --json, --cache)
-tests/                 pytest test suite (49 tests)
+config.py                    Cache path, vig constants, model config reference
+data/loader.py               Reads paired prediction/result JSON, merges by game_id
+data/model_inputs_loader.py  Reads model-inputs + results + predictions for fitness
+backtest/grader.py           Grades games: V2 + V1 + beat-the-book fields
+backtest/metrics.py          Aggregates stats: overall, breakdowns, book_comparison
+backtest/report.py           Rich terminal output
+models/v2_current.py         Port of Yggdrasil's nbaMath.js (weighted stats, model math)
+optimizer/fitness.py         Evaluates candidate config against historical data
+scripts/run_backtest.py      CLI entry point (--days, --team, --json, --cache)
+tests/                       pytest test suite (112 tests)
 ```
 
 ## Commands
@@ -41,10 +44,17 @@ python -m pytest tests/ -v
 Key files in the sibling repo for understanding the data:
 - `yggdrasil/services/nbaBacktest.js` — grading + metrics logic this repo mirrors
 - `yggdrasil/config/nba.js` — model config values
-- `yggdrasil/cache/` — `YYYY-MM-DD-nba-{predictions,results}.json` files
+- `yggdrasil/utils/nbaMath.js` — model math that `models/v2_current.py` ports
+- `yggdrasil/cache/` — `YYYY-MM-DD-nba-{predictions,results,model-inputs}.json` files
+
+## Key Conventions (Phase 2)
+
+- **Beat-the-book uses strict less-than.** `v2_beat_book = (v2_abs_miss < dk_abs)` — ties are not a beat.
+- **book_comparison includes all games.** Beat rate and avg advantage computed over all games with projections, not just bets.
+- **Fitness function config uses per-dollar vig.** `vig_win=0.9091, vig_risk=1.0` (not the dollar amounts in config.py).
+- **Model port matches JS exactly.** Parity verified via integration tests against cached predictions.
 
 ## Future Work
 
-- `optimizer/` — Optuna parameter search
-- `models/` — model experimentation
+- Optuna parameter search using `optimizer/fitness.py`
 - Jupyter notebooks for EDA
