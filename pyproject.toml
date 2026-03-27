@@ -1,0 +1,8 @@
+[project]
+name = "huginn"
+version = "0.1.0"
+description = "NBA prediction backtest and analysis"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
