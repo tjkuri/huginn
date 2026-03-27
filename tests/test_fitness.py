@@ -1,6 +1,8 @@
 import json
 import pytest
+from pathlib import Path
 from optimizer.fitness import evaluate
+from models.v2_current import compute_my_line, compute_confidence_and_ev
 
 
 def _write_json(path, data):
@@ -85,3 +87,149 @@ class TestEvaluate:
 
         if m2["v2"] is not None:
             assert m2["v2"]["total_bets"] <= m1["v2"]["total_bets"]
+
+
+YGGDRASIL_CACHE = Path(__file__).parent.parent.parent / "yggdrasil" / "cache"
+
+PRODUCTION_CFG = {
+    "sample_size": 10,
+    "decay_factor": 0.96,
+    "min_z_threshold": 0.5,
+    "z_medium": 0.8,
+    "z_high": 1.5,
+    "home_boost": 1.5,
+    "min_home_away_games": 4,
+    "vig_win": 0.9091,
+    "vig_risk": 1.0,
+}
+
+
+class TestParity:
+    @pytest.mark.skipif(
+        not YGGDRASIL_CACHE.exists(),
+        reason="Yggdrasil cache not available",
+    )
+    def test_projections_match_cached_predictions(self):
+        """Verify ported model produces same projected_total as Yggdrasil."""
+        cache_path = YGGDRASIL_CACHE
+        input_files = sorted(cache_path.glob("????-??-??-nba-model-inputs.json"))
+
+        if not input_files:
+            pytest.skip("No model-inputs files in cache")
+
+        tested = 0
+        mismatches = []
+
+        for input_file in input_files[-3:]:
+            date_str = input_file.name[:10]
+            pred_file = cache_path / f"{date_str}-nba-predictions.json"
+
+            if not pred_file.exists():
+                continue
+
+            with open(input_file) as f:
+                model_inputs = json.load(f)
+            with open(pred_file) as f:
+                predictions = json.load(f)
+
+            pred_by_id = {
+                str(g["game_id"]): g for g in predictions.get("games", [])
+            }
+
+            for mi in model_inputs:
+                game_id = str(mi["id"])
+                pred = pred_by_id.get(game_id)
+                if not pred or pred.get("projected_total") is None:
+                    continue
+
+                result = compute_my_line(
+                    mi["home_games"], mi["away_games"],
+                    date_str, PRODUCTION_CFG,
+                )
+                if result["my_line"] is None:
+                    continue
+
+                computed = round(result["my_line"], 1)
+                expected = pred["projected_total"]
+                tested += 1
+
+                if abs(computed - expected) > 0.15:
+                    mismatches.append({
+                        "date": date_str,
+                        "game_id": game_id,
+                        "computed": computed,
+                        "expected": expected,
+                        "diff": round(computed - expected, 2),
+                    })
+
+        assert tested > 0, "No games tested -- check cache data"
+        assert not mismatches, (
+            f"{len(mismatches)}/{tested} projection mismatches:\n"
+            + "\n".join(str(m) for m in mismatches[:5])
+        )
+
+    @pytest.mark.skipif(
+        not YGGDRASIL_CACHE.exists(),
+        reason="Yggdrasil cache not available",
+    )
+    def test_z_scores_match_cached_predictions(self):
+        """Verify ported model produces same z_scores as Yggdrasil."""
+        cache_path = YGGDRASIL_CACHE
+        input_files = sorted(cache_path.glob("????-??-??-nba-model-inputs.json"))
+
+        if not input_files:
+            pytest.skip("No model-inputs files in cache")
+
+        tested = 0
+        mismatches = []
+
+        for input_file in input_files[-3:]:
+            date_str = input_file.name[:10]
+            pred_file = cache_path / f"{date_str}-nba-predictions.json"
+
+            if not pred_file.exists():
+                continue
+
+            with open(input_file) as f:
+                model_inputs = json.load(f)
+            with open(pred_file) as f:
+                predictions = json.load(f)
+
+            pred_by_id = {
+                str(g["game_id"]): g for g in predictions.get("games", [])
+            }
+
+            for mi in model_inputs:
+                game_id = str(mi["id"])
+                pred = pred_by_id.get(game_id)
+                if not pred or pred.get("opening_z_score") is None:
+                    continue
+
+                result = compute_my_line(
+                    mi["home_games"], mi["away_games"],
+                    date_str, PRODUCTION_CFG,
+                )
+                if result["my_line"] is None or result["sd_total"] is None:
+                    continue
+
+                discrepancy = result["my_line"] - pred["opening_dk_line"]
+                conf = compute_confidence_and_ev(
+                    discrepancy, result["sd_total"], PRODUCTION_CFG,
+                )
+                if conf["z_score"] is None:
+                    continue
+
+                tested += 1
+                if abs(conf["z_score"] - pred["opening_z_score"]) > 0.002:
+                    mismatches.append({
+                        "date": date_str,
+                        "game_id": game_id,
+                        "computed_z": conf["z_score"],
+                        "expected_z": pred["opening_z_score"],
+                    })
+
+        assert tested > 0, "No games tested -- check cache data"
+        assert not mismatches, (
+            f"{len(mismatches)}/{tested} z-score mismatches:\n"
+            + "\n".join(str(m) for m in mismatches[:5])
+        )
