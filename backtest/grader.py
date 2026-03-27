@@ -54,6 +54,19 @@ def grade_game(game):
         else None
     )
 
+    # -- Beat-the-book comparison ----------------------------------------------
+    dk_miss = game["actual_total"] - game["opening_dk_line"]
+    dk_abs = abs(dk_miss)
+
+    v2_abs_miss = abs(graded["v2_miss"]) if graded["v2_miss"] is not None else None
+    v1_abs_miss = abs(graded["v1_miss"]) if graded["v1_miss"] is not None else None
+
+    graded["dk_miss"] = dk_miss
+    graded["v2_abs_miss"] = v2_abs_miss
+    graded["v1_abs_miss"] = v1_abs_miss
+    graded["v2_beat_book"] = (v2_abs_miss < dk_abs) if v2_abs_miss is not None else None
+    graded["v1_beat_book"] = (v1_abs_miss < dk_abs) if v1_abs_miss is not None else None
+
     return graded
 
 

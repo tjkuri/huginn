@@ -146,3 +146,69 @@ class TestGradeAll:
         assert len(graded) == 2
         assert graded[0]["v2_result"] == "WIN"
         assert graded[1]["v2_result"] == "WIN"
+
+
+class TestGradeGameBeatBook:
+    def test_dk_miss(self):
+        game = _make_game(opening_dk_line=220.0, actual_total=230.0)
+        result = grade_game(game)
+        assert result["dk_miss"] == 10.0
+
+    def test_dk_miss_negative(self):
+        game = _make_game(opening_dk_line=220.0, actual_total=210.0)
+        result = grade_game(game)
+        assert result["dk_miss"] == -10.0
+
+    def test_v2_abs_miss(self):
+        game = _make_game(projected_total=228.0, actual_total=230.0)
+        result = grade_game(game)
+        assert result["v2_abs_miss"] == 2.0
+
+    def test_v2_abs_miss_none_when_no_projected(self):
+        game = _make_game(projected_total=None, actual_total=230.0)
+        result = grade_game(game)
+        assert result["v2_abs_miss"] is None
+
+    def test_v1_abs_miss(self):
+        game = _make_game(v1_line=225.0, actual_total=230.0)
+        result = grade_game(game)
+        assert result["v1_abs_miss"] == 5.0
+
+    def test_v1_abs_miss_none_when_no_v1_line(self):
+        game = _make_game(v1_line=None, actual_total=230.0)
+        result = grade_game(game)
+        assert result["v1_abs_miss"] is None
+
+    def test_v2_beat_book_true(self):
+        # |actual-proj| = 2, |actual-dk| = 10 -> model closer
+        game = _make_game(projected_total=228.0, opening_dk_line=220.0, actual_total=230.0)
+        result = grade_game(game)
+        assert result["v2_beat_book"] is True
+
+    def test_v2_beat_book_false(self):
+        # |actual-proj| = 13, |actual-dk| = 5 -> DK closer
+        game = _make_game(projected_total=228.0, opening_dk_line=220.0, actual_total=215.0)
+        result = grade_game(game)
+        assert result["v2_beat_book"] is False
+
+    def test_v2_beat_book_false_on_tie(self):
+        # |actual-proj| = 5, |actual-dk| = 5 -> tie is not a beat
+        game = _make_game(projected_total=220.0, opening_dk_line=220.0, actual_total=225.0)
+        result = grade_game(game)
+        assert result["v2_beat_book"] is False
+
+    def test_v2_beat_book_none_when_no_projected(self):
+        game = _make_game(projected_total=None, actual_total=230.0)
+        result = grade_game(game)
+        assert result["v2_beat_book"] is None
+
+    def test_v1_beat_book_true(self):
+        # |actual-v1| = 1, |actual-dk| = 10 -> model closer
+        game = _make_game(v1_line=229.0, opening_dk_line=220.0, actual_total=230.0)
+        result = grade_game(game)
+        assert result["v1_beat_book"] is True
+
+    def test_v1_beat_book_none_when_no_v1_line(self):
+        game = _make_game(v1_line=None, actual_total=230.0)
+        result = grade_game(game)
+        assert result["v1_beat_book"] is None
