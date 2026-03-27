@@ -122,10 +122,31 @@ def print_report(graded_games, metrics):
         miss_str = f"{v1['avg_miss']:.2f} pts" if v1["avg_miss"] is not None else "[dim]N/A[/]"
         console.print(f"  Avg miss   {miss_str}")
 
+    # ── Beat the Book ─────────────────────────────────────────────────────────
+    book = metrics.get("book_comparison")
+    _section_header("BEAT THE BOOK")
+    if not book:
+        console.print("  [dim]No data.[/]")
+    else:
+        console.print(f"  DK avg miss   {book['dk_avg_miss']:.2f} pts")
+        console.print()
+        book_table = Table(show_header=True, header_style="dim", box=box.ROUNDED,
+                           border_style="dim")
+        book_table.add_column("Model", style="white")
+        book_table.add_column("Beat DK%", justify="right")
+        book_table.add_column("Avg Advantage", justify="right")
+        for label, stats in [("V2", book["v2"]), ("V1", book["v1"])]:
+            book_table.add_row(
+                label,
+                _color_beat_rate(stats["beat_rate"]),
+                _color_advantage(stats["avg_advantage"]),
+            )
+        console.print(book_table)
+
     # ── Game log ───────────────────────────────────────────────────────────────
     _section_header("GAME LOG")
-    log_table = Table(show_header=True, header_style="dim", box=None,
-                      pad_edge=False, show_edge=False)
+    log_table = Table(show_header=True, header_style="dim", box=box.ROUNDED,
+                      border_style="dim")
     log_table.add_column("Date", style="dim", width=10)
     log_table.add_column("Matchup", width=36)
     log_table.add_column("DK", justify="right", width=6)
@@ -226,3 +247,18 @@ def _stats_line(stats):
         return "[dim]0W-0L-0P  (0 bets)  N/A  N/A[/]"
     record = _color_record(stats)
     return f"{record}  ({stats['total_bets']} bets)  {_color_win_rate(stats['win_rate'])}  {_color_roi(stats['roi'])}"
+
+
+def _color_beat_rate(rate):
+    if rate is None:
+        return "[dim]N/A[/]"
+    style = "green" if rate > 0.5 else "red"
+    return f"[{style}]{rate * 100:.1f}%[/]"
+
+
+def _color_advantage(adv):
+    if adv is None:
+        return "[dim]N/A[/]"
+    sign = "+" if adv >= 0 else ""
+    style = "green" if adv > 0 else ("red" if adv < 0 else "dim")
+    return f"[{style}]{sign}{adv:.2f} pts[/]"
