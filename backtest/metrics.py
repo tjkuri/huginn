@@ -8,7 +8,8 @@ def compute_metrics(graded_games):
     Returns dict with: date_range, total_games, v2 (overall + breakdowns), v1.
     """
     if not graded_games:
-        return {"date_range": None, "total_games": 0, "v2": None, "v1": None}
+        return {"date_range": None, "total_games": 0, "v2": None, "v1": None,
+                "book_comparison": None}
 
     dates = sorted(g["date"] for g in graded_games)
     date_range = {"from": dates[0], "to": dates[-1]}
@@ -122,6 +123,30 @@ def compute_metrics(graded_games):
     avg_miss_v1 = (round(sum(abs(m) for m in v1_misses) / len(v1_misses), 2)
                    if v1_misses else None)
 
+    # ── Book comparison ──────────────────────────────────────────────────────
+    dk_misses_abs = [abs(g["dk_miss"]) for g in graded_games]
+    dk_avg_miss_val = round(sum(dk_misses_abs) / len(dk_misses_abs), 2)
+
+    v2_book_games = [g for g in graded_games if g.get("v2_beat_book") is not None]
+    v2_beat_count = sum(1 for g in v2_book_games if g["v2_beat_book"])
+    v2_beat_rate = round(v2_beat_count / len(v2_book_games), 4) if v2_book_games else None
+    v2_advantages = [abs(g["dk_miss"]) - g["v2_abs_miss"] for g in v2_book_games]
+    v2_avg_adv = (round(sum(v2_advantages) / len(v2_advantages), 2)
+                  if v2_advantages else None)
+
+    v1_book_games = [g for g in graded_games if g.get("v1_beat_book") is not None]
+    v1_beat_count = sum(1 for g in v1_book_games if g["v1_beat_book"])
+    v1_beat_rate = round(v1_beat_count / len(v1_book_games), 4) if v1_book_games else None
+    v1_advantages = [abs(g["dk_miss"]) - g["v1_abs_miss"] for g in v1_book_games]
+    v1_avg_adv = (round(sum(v1_advantages) / len(v1_advantages), 2)
+                  if v1_advantages else None)
+
+    book_comparison = {
+        "dk_avg_miss": dk_avg_miss_val,
+        "v2": {"beat_rate": v2_beat_rate, "avg_advantage": v2_avg_adv},
+        "v1": {"beat_rate": v1_beat_rate, "avg_advantage": v1_avg_adv},
+    }
+
     return {
         "date_range": date_range,
         "total_games": len(graded_games),
@@ -137,6 +162,7 @@ def compute_metrics(graded_games):
             **v1_overall,
             "avg_miss": avg_miss_v1,
         },
+        "book_comparison": book_comparison,
     }
 
 

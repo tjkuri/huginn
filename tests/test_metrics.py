@@ -7,6 +7,10 @@ from backtest.metrics import compute_metrics, _record_stats, _normal_cdf
 def _graded(v2_result, v2_rec, v2_conf, v2_z, v2_miss,
             proj, dk, actual, v1_result, v1_miss, date, **kw):
     """Shorthand to build a graded game dict."""
+    dk_miss = actual - dk
+    dk_abs = abs(dk_miss)
+    v2_abs_miss = abs(v2_miss) if v2_miss is not None else None
+    v1_abs_miss = abs(v1_miss) if v1_miss is not None else None
     g = {
         "date": date,
         "game_id": kw.get("game_id", "1"),
@@ -23,6 +27,11 @@ def _graded(v2_result, v2_rec, v2_conf, v2_z, v2_miss,
         "v1_result": v1_result,
         "v1_miss": v1_miss,
         "went_to_ot": False,
+        "dk_miss": dk_miss,
+        "v2_abs_miss": v2_abs_miss,
+        "v1_abs_miss": v1_abs_miss,
+        "v2_beat_book": (v2_abs_miss < dk_abs) if v2_abs_miss is not None else None,
+        "v1_beat_book": (v1_abs_miss < dk_abs) if v1_abs_miss is not None else None,
     }
     g.update(kw)
     return g
@@ -185,3 +194,44 @@ class TestNormalCdf:
 
     def test_symmetry(self):
         assert abs(_normal_cdf(1.5) + _normal_cdf(-1.5) - 1.0) < 1e-6
+
+
+class TestBookComparison:
+    def test_book_comparison_present(self):
+        m = compute_metrics(GAMES)
+        assert "book_comparison" in m
+        assert m["book_comparison"] is not None
+
+    def test_dk_avg_miss(self):
+        m = compute_metrics(GAMES)
+        # dk_abs: |228-220|=8, |225-230|=5, |215-220|=5, |225-220|=5, |220-220|=0
+        expected = round((8 + 5 + 5 + 5 + 0) / 5, 2)
+        assert m["book_comparison"]["dk_avg_miss"] == expected
+
+    def test_v2_beat_rate(self):
+        m = compute_metrics(GAMES)
+        # v2_abs: 7, 2, 6, 2, 15   dk_abs: 8, 5, 5, 5, 0
+        # beats:  T, T, F, T, F  -> 3/5
+        assert m["book_comparison"]["v2"]["beat_rate"] == round(3 / 5, 4)
+
+    def test_v2_avg_advantage(self):
+        m = compute_metrics(GAMES)
+        # advantages (dk_abs - v2_abs): 8-7=1, 5-2=3, 5-6=-1, 5-2=3, 0-15=-15
+        expected = round((1 + 3 + (-1) + 3 + (-15)) / 5, 2)
+        assert m["book_comparison"]["v2"]["avg_advantage"] == expected
+
+    def test_v1_beat_rate(self):
+        m = compute_metrics(GAMES)
+        # v1_abs: 3, 0, 10, 3, 5   dk_abs: 8, 5, 5, 5, 0
+        # beats:  T, T, F,  T, F  -> 3/5
+        assert m["book_comparison"]["v1"]["beat_rate"] == round(3 / 5, 4)
+
+    def test_v1_avg_advantage(self):
+        m = compute_metrics(GAMES)
+        # advantages (dk_abs - v1_abs): 8-3=5, 5-0=5, 5-10=-5, 5-3=2, 0-5=-5
+        expected = round((5 + 5 + (-5) + 2 + (-5)) / 5, 2)
+        assert m["book_comparison"]["v1"]["avg_advantage"] == expected
+
+    def test_book_comparison_none_when_empty(self):
+        m = compute_metrics([])
+        assert m["book_comparison"] is None
