@@ -19,4 +19,5 @@ NBA_MODEL = {
     "z_medium": 0.8,
     "z_high": 1.5,
     "home_boost": 1.5,
+    "min_home_away_games": 4,
 }
