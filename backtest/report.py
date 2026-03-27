@@ -1,3 +1,4 @@
+from rich import box
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
@@ -33,8 +34,8 @@ def print_report(graded_games, metrics):
 
         # By confidence
         console.print()
-        conf_table = Table(show_header=True, header_style="dim", box=None,
-                           pad_edge=False, show_edge=False)
+        conf_table = Table(show_header=True, header_style="dim", box=box.ROUNDED,
+                           border_style="dim")
         conf_table.add_column("Confidence", style="white")
         conf_table.add_column("Record")
         conf_table.add_column("Bets", justify="right")
@@ -63,8 +64,8 @@ def print_report(graded_games, metrics):
         # By direction
         console.print()
         console.print("  [dim]By direction:[/]")
-        dir_table = Table(show_header=True, header_style="dim", box=None,
-                          pad_edge=False, show_edge=False)
+        dir_table = Table(show_header=True, header_style="dim", box=box.ROUNDED,
+                          border_style="dim")
         dir_table.add_column("Direction", style="white")
         dir_table.add_column("Record")
         dir_table.add_column("Bets", justify="right")
@@ -77,9 +78,9 @@ def print_report(graded_games, metrics):
 
         # By gap size
         console.print()
-        console.print("  [dim]By gap size (|proj - DK|):[/]")
-        gap_table = Table(show_header=True, header_style="dim", box=None,
-                          pad_edge=False, show_edge=False)
+        console.print("  [dim]By gap size (|proj − DK|):[/]")
+        gap_table = Table(show_header=True, header_style="dim", box=box.ROUNDED,
+                          border_style="dim")
         gap_table.add_column("Gap |pts|", style="white")
         gap_table.add_column("Record")
         gap_table.add_column("Bets", justify="right")
@@ -93,9 +94,9 @@ def print_report(graded_games, metrics):
         # Calibration
         if v2.get("calibration"):
             console.print()
-            console.print("  [dim]Calibration  (|z| bucket -> predicted vs actual win%):[/]")
-            cal_table = Table(show_header=True, header_style="dim", box=None,
-                              pad_edge=False, show_edge=False)
+            console.print("  [dim]Calibration  (|z| bucket → predicted vs actual win%):[/]")
+            cal_table = Table(show_header=True, header_style="dim", box=box.ROUNDED,
+                              border_style="dim")
             cal_table.add_column("|z| bucket", style="white")
             cal_table.add_column("Predicted", justify="right")
             cal_table.add_column("Actual", justify="right")
@@ -103,7 +104,7 @@ def print_report(graded_games, metrics):
             for bucket, c in v2["calibration"].items():
                 pred = f"{c['predicted_win_prob'] * 100:.1f}%" if c["predicted_win_prob"] else "[dim]N/A[/]"
                 n_str = str(c["count"])
-                warn = f" [yellow]! n={c['count']}[/]" if c["count"] < 10 else f" [dim]n={c['count']}[/]"
+                warn = f" [yellow]⚠ n={c['count']}[/]" if c["count"] < 10 else f" [dim]n={c['count']}[/]"
                 cal_table.add_row(
                     bucket,
                     f"[dim]{pred}[/]",
