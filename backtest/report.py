@@ -147,21 +147,21 @@ def print_report(graded_games, metrics):
     _section_header("GAME LOG")
     log_table = Table(show_header=True, header_style="dim", box=box.ROUNDED,
                       border_style="dim")
-    log_table.add_column("Date", style="dim", width=10)
-    log_table.add_column("Matchup", width=36)
-    log_table.add_column("DK", justify="right", width=6)
-    log_table.add_column("Proj", justify="right", width=6)
-    log_table.add_column("Actual", justify="right", width=6)
-    log_table.add_column("Rec", width=8)
-    log_table.add_column("V2", width=6)
-    log_table.add_column("V1 line", justify="right", width=7)
-    log_table.add_column("V1", width=6)
-    log_table.add_column("OT", width=3)
+    log_table.add_column("Date", style="dim", no_wrap=True)
+    log_table.add_column("Matchup", max_width=30, no_wrap=True)
+    log_table.add_column("DK", justify="right", no_wrap=True)
+    log_table.add_column("Proj", justify="right", no_wrap=True)
+    log_table.add_column("Actual", justify="right", no_wrap=True)
+    log_table.add_column("Rec", no_wrap=True)
+    log_table.add_column("V2", no_wrap=True)
+    log_table.add_column("V1 line", justify="right", no_wrap=True)
+    log_table.add_column("V1", no_wrap=True)
+    log_table.add_column("OT", no_wrap=True)
 
     for g in graded_games:
         matchup = f"{g['away_team']} @ {g['home_team']}"
-        if len(matchup) > 35:
-            matchup = matchup[:34] + "…"
+        if len(matchup) > 29:
+            matchup = matchup[:28] + "…"
 
         rec = g.get("opening_recommendation", "-")
         if rec == "O":
