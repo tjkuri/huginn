@@ -1,7 +1,7 @@
 import json
 import pytest
 from pathlib import Path
-from optimizer.fitness import evaluate
+from optimizer.fitness import evaluate, evaluate_config
 from models.v2_current import compute_my_line, compute_confidence_and_ev
 
 
@@ -87,6 +87,38 @@ class TestEvaluate:
 
         if m2["v2"] is not None:
             assert m2["v2"]["total_bets"] <= m1["v2"]["total_bets"]
+
+
+class TestEvaluateConfig:
+    def test_returns_flat_dict(self, tmp_path):
+        _make_cache(tmp_path)
+        result = evaluate_config(DEFAULT_CFG, tmp_path)
+        assert "beat_rate" in result
+        assert "avg_miss" in result
+        assert "avg_advantage" in result
+        assert "roi" in result
+        assert "win_rate" in result
+        assert "total_bets" in result
+        assert "total_games" in result
+
+    def test_empty_cache_returns_penalties(self, tmp_path):
+        result = evaluate_config(DEFAULT_CFG, tmp_path)
+        assert result["beat_rate"] == 0.0
+        assert result["avg_miss"] == 999.0
+        assert result["roi"] == -100.0
+        assert result["total_games"] == 0
+
+    def test_sample_size_truncates_games(self, tmp_path):
+        _make_cache(tmp_path)
+        small_cfg = {**DEFAULT_CFG, "sample_size": 1}
+        result = evaluate_config(small_cfg, tmp_path)
+        assert result["total_games"] == 1
+
+    def test_values_are_numeric(self, tmp_path):
+        _make_cache(tmp_path)
+        result = evaluate_config(DEFAULT_CFG, tmp_path)
+        for key in ("beat_rate", "avg_miss", "avg_advantage", "roi", "win_rate"):
+            assert isinstance(result[key], (int, float)), f"{key} should be numeric"
 
 
 YGGDRASIL_CACHE = Path(__file__).parent.parent.parent / "yggdrasil" / "cache"
