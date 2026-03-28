@@ -24,7 +24,7 @@ Huginn reads prediction and result data from [Yggdrasil](../yggdrasil) (the NBA 
 Huginn talks to Yggdrasil through a single, narrow interface:
 
 - **Input:** JSON files from Yggdrasil's `cache/` directory
-- **Output (future):** Optimized config JSON that gets copied back into Yggdrasil
+- **Output:** Optimized config JSON (`output/nba_config.json`) that gets copied back into Yggdrasil
 
 ## Usage
 
@@ -41,6 +41,10 @@ python scripts/run_backtest.py --team Lakers          # filter by team
 python scripts/run_backtest.py --json                 # raw JSON output
 python scripts/run_backtest.py --cache /path/to/cache # override cache dir
 
+# Run optimizer
+python scripts/run_optimizer.py --trials 500 --target beat_rate
+python scripts/run_optimizer.py --target avg_miss --export
+
 # Run tests
 python -m pytest tests/ -v
 ```
@@ -48,16 +52,19 @@ python -m pytest tests/ -v
 ## Architecture
 
 ```
-data/loader.py        Read + merge prediction/result JSON from cache
+data/loader.py              Read + merge prediction/result JSON from cache
+data/model_inputs_loader.py Read raw model-inputs for optimizer
         |
-backtest/grader.py    Grade each game: V2 model + V1 baseline
+models/v2_current.py        V2 model math (weighted stats, projections, z-scores)
         |
-backtest/metrics.py   Aggregate into stats (overall, by-confidence,
-        |              by-direction, by-gap-size, calibration)
+backtest/grader.py          Grade each game: V2 model + V1 baseline + beat-the-book
         |
-backtest/report.py    Rich terminal output
+backtest/metrics.py         Aggregate into stats (overall, breakdowns, book comparison)
+        |
+backtest/report.py          Rich terminal output
+optimizer/fitness.py        Evaluate candidate configs with temporal CV
 ```
 
-## Metrics Parity
+## Model Parity
 
-The Python backtest produces identical metrics to Yggdrasil's Node.js backtest (`node scripts/backtest.js`). This is validated by comparing JSON output field-by-field across all breakdowns.
+The Python model math produces identical outputs to Yggdrasil's `utils/nbaMath.js`. This is validated by integration tests comparing projections and z-scores against cached predictions.

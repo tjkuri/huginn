@@ -37,7 +37,7 @@ python scripts/run_optimizer.py --target avg_miss --export
 
 ## Key Conventions
 
-- **Parity with Yggdrasil is critical.** The Python backtest must produce identical metrics to `node scripts/backtest.js --json` in Yggdrasil. When changing grading or metrics logic, always verify parity.
+- **Parity with Yggdrasil math is critical.** The Python model math must match `yggdrasil/utils/nbaMath.js` exactly. Verified via integration tests against cached predictions.
 - **game_id is always a string.** Both prediction and result files may store it as a number — coerce to string for matching.
 - **avg_miss uses absolute values.** `mean(|v2_miss|)` for all games including NO_BET.
 - **Calibration recomputes normalCDF from z_score.** Does NOT use the pre-computed `opening_win_prob` from predictions. Uses Abramowitz & Stegun approximation matching Yggdrasil's implementation.
@@ -47,7 +47,6 @@ python scripts/run_optimizer.py --target avg_miss --export
 ## Yggdrasil Reference
 
 Key files in the sibling repo for understanding the data:
-- `yggdrasil/services/nbaBacktest.js` — grading + metrics logic this repo mirrors
 - `yggdrasil/config/nba.js` — model config values
 - `yggdrasil/utils/nbaMath.js` — model math that `models/v2_current.py` ports
 - `yggdrasil/cache/` — `YYYY-MM-DD-nba-{predictions,results,model-inputs}.json` files
