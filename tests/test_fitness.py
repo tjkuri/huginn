@@ -1,7 +1,7 @@
 import json
 import pytest
 from pathlib import Path
-from optimizer.fitness import evaluate, evaluate_config
+from optimizer.fitness import evaluate, evaluate_config, evaluate_config_cv
 from models.v2_current import compute_my_line, compute_confidence_and_ev
 
 
@@ -117,6 +117,29 @@ class TestEvaluateConfig:
     def test_values_are_numeric(self, tmp_path):
         _make_cache(tmp_path)
         result = evaluate_config(DEFAULT_CFG, tmp_path)
+        for key in ("beat_rate", "avg_miss", "avg_advantage", "roi", "win_rate"):
+            assert isinstance(result[key], (int, float)), f"{key} should be numeric"
+
+
+class TestEvaluateConfigCV:
+    def test_returns_flat_dict(self, tmp_path):
+        for i in range(5):
+            _make_cache(tmp_path, date=f"2026-01-{10 + i}")
+        result = evaluate_config_cv(DEFAULT_CFG, tmp_path, k=5)
+        assert "beat_rate" in result
+        assert "avg_miss" in result
+        assert "total_games" in result
+
+    def test_fewer_games_than_folds_falls_back(self, tmp_path):
+        _make_cache(tmp_path, date="2026-01-10")
+        result = evaluate_config_cv(DEFAULT_CFG, tmp_path, k=5)
+        # Should not crash — falls back to full evaluation
+        assert result["total_games"] >= 0
+
+    def test_cv_returns_numeric_values(self, tmp_path):
+        for i in range(3):
+            _make_cache(tmp_path, date=f"2026-01-{10 + i}")
+        result = evaluate_config_cv(DEFAULT_CFG, tmp_path, k=3)
         for key in ("beat_rate", "avg_miss", "avg_advantage", "roi", "win_rate"):
             assert isinstance(result[key], (int, float)), f"{key} should be numeric"
 

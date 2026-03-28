@@ -4,6 +4,8 @@ Fitness function: evaluate a candidate config against historical data.
 Loads model-inputs from cache, recomputes projections using candidate config,
 grades against actuals, and returns metrics.
 """
+from itertools import groupby
+
 from data.model_inputs_loader import load_model_inputs
 from models.v2_current import (
     compute_my_line,
@@ -109,3 +111,50 @@ def evaluate_config(cfg, cache_dir, days=None):
     """
     metrics = evaluate(cache_dir, cfg, days=days)
     return _extract_fitness(metrics)
+
+
+def evaluate_config_cv(cfg, cache_dir, k=5):
+    """
+    Temporal k-fold cross-validation.
+
+    Splits games by date into k folds (preserving temporal order),
+    evaluates the config on each fold independently, averages results.
+    Returns the same flat dict format as evaluate_config.
+    """
+    raw_games = load_model_inputs(cache_dir)
+
+    if len(raw_games) < k:
+        return evaluate_config(cfg, cache_dir)
+
+    # Group by date, preserving temporal order
+    raw_games.sort(key=lambda g: g["date"])
+    date_groups = []
+    for _date, games in groupby(raw_games, key=lambda g: g["date"]):
+        date_groups.append(list(games))
+
+    if len(date_groups) < k:
+        return evaluate_config(cfg, cache_dir)
+
+    # Distribute date groups into k folds (round-robin preserves temporal spread)
+    folds = [[] for _ in range(k)]
+    for i, group in enumerate(date_groups):
+        folds[i % k].extend(group)
+
+    # Evaluate each fold
+    fold_results = []
+    for fold in folds:
+        if not fold:
+            continue
+        metrics = _compute_and_grade(fold, cfg)
+        fold_results.append(_extract_fitness(metrics))
+
+    if not fold_results:
+        return evaluate_config(cfg, cache_dir)
+
+    # Average numeric fields across folds
+    averaged = {}
+    for key in fold_results[0]:
+        values = [r[key] for r in fold_results]
+        averaged[key] = sum(values) / len(values)
+
+    return averaged
