@@ -389,7 +389,8 @@ def main():
     # Evaluate current config for baseline
     console.print()
     console.print(" [dim]Evaluating current config baseline...[/]")
-    current_result = evaluate_config(NBA_MODEL, cache_dir)
+    current_cfg = {**NBA_MODEL, **FIXED_PARAMS}
+    current_result = evaluate_config(current_cfg, cache_dir)
 
     # Run optimization
     target_info = TARGETS[args.target]
