@@ -1,8 +1,8 @@
 import json
 import pytest
 from pathlib import Path
-from optimizer.fitness import evaluate, evaluate_config, evaluate_config_cv
-from models.v2_current import compute_my_line, compute_confidence_and_ev
+from nba.optimizer.fitness import evaluate, evaluate_config, evaluate_config_cv
+from nba.models.v2_current import compute_my_line, compute_confidence_and_ev
 
 
 def _write_json(path, data):

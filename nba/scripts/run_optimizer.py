@@ -21,15 +21,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 import optuna
 from rich.console import Console
 from rich.table import Table
 from rich import box
 
-from config import YGGDRASIL_CACHE, NBA_MODEL
-from optimizer.fitness import evaluate_config, evaluate_config_cv
+from nba.config import YGGDRASIL_CACHE, NBA_MODEL
+from nba.optimizer.fitness import evaluate_config, evaluate_config_cv
 
 
 console = Console()
@@ -413,7 +413,7 @@ def main():
         display_result = best_full_result if best_full_result is not None else \
             study.best_trial.user_attrs.get("result", {})
         total_games = int(display_result.get("total_games", 0))
-        project_root = Path(__file__).resolve().parent.parent
+        project_root = Path(__file__).resolve().parent.parent.parent
         export_config(study, args.target, total_games,
                       project_root / "output" / "nba_config.json",
                       full_result=best_full_result)

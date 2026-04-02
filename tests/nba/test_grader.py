@@ -1,4 +1,4 @@
-from backtest.grader import grade_game, grade_all
+from nba.backtest.grader import grade_game, grade_all
 
 
 def _make_game(**overrides):

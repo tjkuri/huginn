@@ -1,6 +1,6 @@
 import math
-from models.v2_current import weighted_mean, weighted_variance, normal_cdf
-from models.v2_current import compute_my_line, compute_confidence_and_ev, compute_recommendation
+from nba.models.v2_current import weighted_mean, weighted_variance, normal_cdf
+from nba.models.v2_current import compute_my_line, compute_confidence_and_ev, compute_recommendation
 
 
 class TestWeightedMean:

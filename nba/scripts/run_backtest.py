@@ -15,13 +15,13 @@ import sys
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from config import YGGDRASIL_CACHE
-from data.loader import load_all_days
-from backtest.grader import grade_all
-from backtest.metrics import compute_metrics
-from backtest.report import print_report
+from nba.config import YGGDRASIL_CACHE
+from nba.data.loader import load_all_days
+from nba.backtest.grader import grade_all
+from nba.backtest.metrics import compute_metrics
+from nba.backtest.report import print_report
 
 
 def main():

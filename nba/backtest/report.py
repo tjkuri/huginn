@@ -2,7 +2,7 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
-from config import WIN_THRESHOLD
+from nba.config import WIN_THRESHOLD
 
 
 console = Console()

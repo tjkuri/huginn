@@ -1,6 +1,6 @@
 import json
 import pytest
-from data.model_inputs_loader import load_model_inputs
+from nba.data.model_inputs_loader import load_model_inputs
 
 
 def _write_json(path, data):

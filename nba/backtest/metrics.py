@@ -1,5 +1,5 @@
 import math
-from config import VIG_RISK, VIG_WIN
+from nba.config import VIG_RISK, VIG_WIN
 
 
 def compute_metrics(graded_games):

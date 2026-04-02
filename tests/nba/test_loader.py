@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from data.loader import load_all_days
+from nba.data.loader import load_all_days
 
 
 def _write_fixture_day(tmp_path, date_str, predictions, results):

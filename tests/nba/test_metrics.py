@@ -1,5 +1,5 @@
 import math
-from backtest.metrics import compute_metrics, _record_stats, _normal_cdf
+from nba.backtest.metrics import compute_metrics, _record_stats, _normal_cdf
 
 
 # ─── Fixture: graded games with known outcomes ────────────────────────────────

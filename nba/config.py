@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # Yggdrasil cache directory (sibling repo)
-YGGDRASIL_CACHE = Path(__file__).parent.parent / "yggdrasil" / "cache"
+YGGDRASIL_CACHE = Path(__file__).parent.parent.parent / "yggdrasil" / "cache"
 
 # Vig constants for ROI at -110
 VIG_RISK = 100       # dollars risked per bet

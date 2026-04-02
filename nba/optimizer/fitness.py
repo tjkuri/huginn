@@ -6,14 +6,14 @@ grades against actuals, and returns metrics.
 """
 from itertools import groupby
 
-from data.model_inputs_loader import load_model_inputs
-from models.v2_current import (
+from nba.data.model_inputs_loader import load_model_inputs
+from nba.models.v2_current import (
     compute_my_line,
     compute_confidence_and_ev,
     compute_recommendation,
 )
-from backtest.grader import grade_all
-from backtest.metrics import compute_metrics
+from nba.backtest.grader import grade_all
+from nba.backtest.metrics import compute_metrics
 
 
 def _compute_and_grade(raw_games, cfg):

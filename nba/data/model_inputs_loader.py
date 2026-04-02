@@ -1,7 +1,7 @@
 """Load model-inputs + results from Yggdrasil cache."""
 import json
 from pathlib import Path
-from data.loader import _is_date_complete
+from nba.data.loader import _is_date_complete
 
 
 def load_model_inputs(cache_dir, days=None):

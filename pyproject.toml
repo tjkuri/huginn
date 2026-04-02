@@ -1,7 +1,7 @@
 [project]
 name = "huginn"
 version = "0.1.0"
-description = "NBA prediction backtest and analysis"
+description = "Sports prediction backtest and simulation engine"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
