@@ -9,4 +9,5 @@ build/
 .pytest_cache/
 .coverage
 output/
+baseball_cache/
 docs/superpowers/
