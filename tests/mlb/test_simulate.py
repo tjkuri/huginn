@@ -359,12 +359,17 @@ from mlb.data.models import GameContext, GameState, Lineup, PAResult, ParkFactor
 from mlb.engine.simulate import should_pull_starter, get_current_pitcher, simulate_half_inning
 
 
+_REALISTIC_RATES = {
+    'K': 0.225, 'BB': 0.076, 'HBP': 0.011,
+    '1B': 0.145, '2B': 0.046, '3B': 0.004, 'HR': 0.030, 'OUT': 0.463,
+}
+
+
 def _make_pitcher(name: str, throws: str = 'R') -> PitcherStats:
-    """Helper to create a PitcherStats with neutral rates."""
-    rates = {o.value: 1.0 / len(Outcome) for o in Outcome}
+    """Helper to create a PitcherStats with realistic league-average rates."""
     return PitcherStats(
         player_id=name, name=name, throws=Hand(throws),
-        pa_against=500, rates=rates,
+        pa_against=500, rates=dict(_REALISTIC_RATES),
     )
 
 
@@ -372,9 +377,8 @@ def _make_lineup(starter_name: str = 'Starter', bullpen_names: list | None = Non
     """Helper to create a Lineup with a starter and bullpen."""
     if bullpen_names is None:
         bullpen_names = ['Reliever1', 'Reliever2', 'Closer']
-    batter_rates = {o.value: 1.0 / len(Outcome) for o in Outcome}
     batters = [
-        BatterStats(player_id=f'b{i}', name=f'Batter{i}', bats=Hand.RIGHT, pa=500, rates=batter_rates)
+        BatterStats(player_id=f'b{i}', name=f'Batter{i}', bats=Hand.RIGHT, pa=500, rates=dict(_REALISTIC_RATES))
         for i in range(9)
     ]
     return Lineup(
@@ -579,3 +583,92 @@ class TestSimulateHalfInning:
         simulate_half_inning(ctx, state, is_top=True, league_averages=LEAGUE_AVERAGES, rng=rng)
 
         assert state.home_pitch_count == 12
+
+
+from mlb.engine.simulate import simulate_game
+
+
+class TestSimulateGame:
+    """simulate_game: full game simulation."""
+
+    def test_deterministic_seed(self):
+        """Same seed produces identical results."""
+        ctx = _make_game_context()
+        result1 = simulate_game(ctx, LEAGUE_AVERAGES, seed=12345)
+        result2 = simulate_game(ctx, LEAGUE_AVERAGES, seed=12345)
+        assert result1.away_runs == result2.away_runs
+        assert result1.home_runs == result2.home_runs
+        assert result1.away_hits == result2.away_hits
+        assert result1.home_hits == result2.home_hits
+        assert result1.innings_played == result2.innings_played
+        assert len(result1.pa_results) == len(result2.pa_results)
+
+    def test_different_seeds_differ(self):
+        """Different seeds produce different results (with high probability)."""
+        ctx = _make_game_context()
+        results = [simulate_game(ctx, LEAGUE_AVERAGES, seed=i) for i in range(10)]
+        scores = [(r.away_runs, r.home_runs) for r in results]
+        assert len(set(scores)) > 1
+
+    def test_basic_structure(self):
+        """Game produces reasonable innings, scores, hits, and PA count."""
+        ctx = _make_game_context()
+        result = simulate_game(ctx, LEAGUE_AVERAGES, seed=42)
+        assert 9 <= result.innings_played <= 15
+        assert result.away_runs >= 0
+        assert result.home_runs >= 0
+        assert result.away_hits >= 0
+        assert result.home_hits >= 0
+        assert 40 <= len(result.pa_results) <= 150
+        assert result.game_id == 'test-001'
+
+    def test_home_skips_bottom_9th_if_ahead(self):
+        """If home leads after top 9, bottom of 9th is not played."""
+        home_lineup = _make_lineup('HomeSP')
+        home_lineup.starting_pitcher = _make_k_only_pitcher('HomeAce')
+        away_lineup = _make_lineup('AwaySP')
+        away_lineup.starting_pitcher = _make_hr_only_pitcher('AwayBad')
+        ctx = _make_game_context(away_lineup=away_lineup, home_lineup=home_lineup)
+        result = simulate_game(ctx, LEAGUE_AVERAGES, seed=42)
+        assert result.home_runs > result.away_runs
+        assert result.innings_played == 9
+
+    def test_extra_innings_runner_on_second(self):
+        """In 10th+ innings, each half-inning starts with runner on 2nd."""
+        ctx = _make_game_context()
+        extra_inning_result = None
+        for seed in range(200):
+            result = simulate_game(ctx, LEAGUE_AVERAGES, seed=seed)
+            if result.innings_played > 9:
+                extra_inning_result = result
+                break
+
+        if extra_inning_result is None:
+            pytest.skip("No extra-inning game found in 200 seeds")
+
+        tenth_inning_pas = [r for r in extra_inning_result.pa_results if r.inning == 10]
+        assert len(tenth_inning_pas) > 0
+        assert tenth_inning_pas[0].runners_before.second is True
+
+    def test_mercy_rule_caps_at_15_innings(self):
+        """Games are capped at 15 innings."""
+        ctx = _make_game_context()
+        for seed in range(100):
+            result = simulate_game(ctx, LEAGUE_AVERAGES, seed=seed)
+            assert result.innings_played <= 15
+
+    def test_hits_count_correctly(self):
+        """away_hits + home_hits equals total hits in pa_results."""
+        ctx = _make_game_context()
+        result = simulate_game(ctx, LEAGUE_AVERAGES, seed=42)
+        hit_outcomes = {Outcome.SINGLE, Outcome.DOUBLE, Outcome.TRIPLE, Outcome.HR}
+        total_hits = sum(1 for r in result.pa_results if r.outcome in hit_outcomes)
+        assert result.away_hits + result.home_hits == total_hits
+
+    def test_returns_simulated_game(self):
+        """Return type is SimulatedGame with correct game_id."""
+        from mlb.data.models import SimulatedGame
+        ctx = _make_game_context()
+        result = simulate_game(ctx, LEAGUE_AVERAGES, seed=42)
+        assert isinstance(result, SimulatedGame)
+        assert result.game_id == 'test-001'

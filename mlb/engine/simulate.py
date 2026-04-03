@@ -248,7 +248,7 @@ def simulate_half_inning(
     """
     results: list[PAResult] = []
     outs = 0
-    bases = BaseState()
+    bases = game_state.bases  # supports extra-inning ghost runner
 
     # Determine batting team and defensive team
     if is_top:
@@ -342,3 +342,85 @@ def simulate_half_inning(
             break
 
     return results
+
+
+_MAX_INNINGS = 15  # Mercy rule cap to prevent infinite loops
+
+
+def simulate_game(
+    game_context: GameContext,
+    league_averages: dict,
+    seed: int | None = None,
+) -> SimulatedGame:
+    """Simulate a complete baseball game.
+
+    Returns a SimulatedGame with runs, hits, innings, and full PA log.
+    The optional seed makes the simulation fully reproducible.
+    """
+    rng = np.random.default_rng(seed)
+    game_state = GameState()
+    all_pa_results: list[PAResult] = []
+
+    while game_state.inning <= _MAX_INNINGS:
+        # ── Top of inning ────────────────────────────────────────────
+        game_state.is_top = True
+
+        # Extra innings: place runner on 2nd (MLB ghost runner rule, 2020+)
+        if game_state.inning >= 10:
+            game_state.bases = BaseState(second=True)
+        else:
+            game_state.bases = BaseState()
+
+        top_results = simulate_half_inning(
+            game_context, game_state, is_top=True,
+            league_averages=league_averages, rng=rng,
+        )
+        all_pa_results.extend(top_results)
+
+        # Skip bottom if home already leads after 9th+ (game over)
+        if game_state.inning >= 9 and game_state.home_score > game_state.away_score:
+            break
+
+        # ── Bottom of inning ─────────────────────────────────────────
+        game_state.is_top = False
+
+        # Extra innings: place runner on 2nd
+        if game_state.inning >= 10:
+            game_state.bases = BaseState(second=True)
+        else:
+            game_state.bases = BaseState()
+
+        bottom_results = simulate_half_inning(
+            game_context, game_state, is_top=False,
+            league_averages=league_averages, rng=rng,
+        )
+        all_pa_results.extend(bottom_results)
+
+        # After complete inning: if not tied after 9+, game over
+        if game_state.inning >= 9 and game_state.home_score != game_state.away_score:
+            break
+
+        game_state.inning += 1
+
+    # ── Count hits by team ───────────────────────────────────────────
+    hit_outcomes = {Outcome.SINGLE, Outcome.DOUBLE, Outcome.TRIPLE, Outcome.HR}
+    away_batter_ids = {b.player_id for b in game_context.away_lineup.batting_order}
+
+    away_hits = sum(
+        1 for pa in all_pa_results
+        if pa.outcome in hit_outcomes and pa.batter_id in away_batter_ids
+    )
+    home_hits = sum(
+        1 for pa in all_pa_results
+        if pa.outcome in hit_outcomes and pa.batter_id not in away_batter_ids
+    )
+
+    return SimulatedGame(
+        game_id=game_context.game_id,
+        away_runs=game_state.away_score,
+        home_runs=game_state.home_score,
+        away_hits=away_hits,
+        home_hits=home_hits,
+        pa_results=all_pa_results,
+        innings_played=game_state.inning,
+    )
