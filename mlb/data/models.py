@@ -148,6 +148,8 @@ class GameState:
     home_batting_index: int = 0
     away_pitch_count: int = 0
     home_pitch_count: int = 0
+    away_bullpen_index: int = -1  # -1 = starter still in, 0+ = bullpen index
+    home_bullpen_index: int = -1
 
 
 # ── Simulation results ───────────────────────────────────────────────────────
