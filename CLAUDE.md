@@ -20,7 +20,8 @@ mlb/                             MLB Monte Carlo simulation engine
   config.py                      Enums, league averages, season config, simulation defaults
   data/models.py                 Typed dataclasses for all MLB data structures
   data/cache.py                  File-based JSON caching with TTL
-  engine/                        (simulation engine — future)
+  engine/probabilities.py        Odds ratio, park/weather adjustments, PA probability tables
+  engine/simulate.py             Game simulation: outcome sampling, baserunners, 9-inning loop
   scripts/                       (CLI entry points — future)
 tests/mlb/                       pytest tests for MLB scaffolding
 ```
@@ -43,6 +44,9 @@ python nba/scripts/run_optimizer.py --target avg_miss --export
 
 # Run MLB tests
 python -m pytest tests/mlb/ -v
+
+# Run MLB simulation tests
+python -m pytest tests/mlb/test_simulate.py -v
 
 # Run all tests
 python -m pytest tests/ -v
@@ -87,6 +91,12 @@ Key files in the sibling repo for understanding the data:
 - **Park factors split by batter hand.** `ParkFactors.get_factors(hand)` returns the correct multiplier dict.
 - **BaseState is frozen.** Each PA produces a new BaseState; never mutate in place.
 - **Stdlib only.** MLB code uses only Python standard library (no new dependencies).
+- **numpy RNG threading.** All randomness flows through `np.random.Generator` parameters — no global state. Enables reproducible simulations via seed.
+- **Approximate pitch counting.** 4 pitches per PA as a rough average for pitch count tracking.
+- **Extra-inning ghost runner.** 10th+ inning half-innings start with `BaseState(second=True)` per MLB rules (2020+).
+- **Mercy rule at 15 innings.** Games capped to prevent infinite loops in edge cases.
+- **Bullpen in order.** Relievers used sequentially from `lineup.bullpen`. Handedness-based selection is a future enhancement.
+- **No GIDP in v1.** Ground-ball double plays not modeled; runners hold on generic outs (except sac fly).
 
 ## Future Work
 
