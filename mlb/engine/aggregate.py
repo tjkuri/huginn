@@ -75,3 +75,16 @@ def compute_run_distributions(games: list[SimulatedGame]) -> dict:
             'std': float(np.std(diff)),
         },
     }
+
+
+def compute_win_probability(games: list[SimulatedGame]) -> dict:
+    """Compute win/loss/tie fractions from a batch of simulated games."""
+    n = len(games)
+    home_wins = sum(1 for g in games if g.home_runs > g.away_runs)
+    away_wins = sum(1 for g in games if g.away_runs > g.home_runs)
+    ties = sum(1 for g in games if g.away_runs == g.home_runs)
+    return {
+        'home_win_pct': home_wins / n,
+        'away_win_pct': away_wins / n,
+        'tie_pct': ties / n,
+    }

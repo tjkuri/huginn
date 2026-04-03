@@ -6,7 +6,7 @@ from mlb.config import Hand, Outcome, LEAGUE_AVERAGES
 from mlb.data.models import (
     BatterStats, PitcherStats, Lineup, ParkFactors, GameContext, SimulatedGame,
 )
-from mlb.engine.aggregate import run_simulations, compute_run_distributions
+from mlb.engine.aggregate import run_simulations, compute_run_distributions, compute_win_probability
 
 
 # ── Shared fixtures ──────────────────────────────────────────────────────────
@@ -135,3 +135,32 @@ class TestComputeRunDistributions:
         dist = compute_run_distributions(games)
         assert 'mean' in dist['run_diff']
         assert 'std' in dist['run_diff']
+
+
+class TestComputeWinProbability:
+
+    def test_sums_to_one(self):
+        """home_win_pct + away_win_pct + tie_pct == 1.0."""
+        ctx = _make_game_context()
+        games = run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=200, base_seed=42)
+        wp = compute_win_probability(games)
+        total = wp['home_win_pct'] + wp['away_win_pct'] + wp['tie_pct']
+        assert abs(total - 1.0) < 1e-9
+
+    def test_rigged_game_home_dominates(self):
+        """Away team with K=1.0 batters should almost never win (home_win_pct > 0.90)."""
+        k_only_rates = {o.value: 0.0 for o in Outcome}
+        k_only_rates['K'] = 1.0
+        away_lineup = _make_lineup('AWY', 'AwaySP', rates=k_only_rates)
+        home_lineup = _make_lineup('HME', 'HomeSP')
+        ctx = _make_game_context(away_lineup=away_lineup, home_lineup=home_lineup)
+        games = run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=500, base_seed=1)
+        wp = compute_win_probability(games)
+        assert wp['home_win_pct'] > 0.90
+
+    def test_all_keys_present(self):
+        """Result contains home_win_pct, away_win_pct, tie_pct."""
+        ctx = _make_game_context()
+        games = run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=50, base_seed=5)
+        wp = compute_win_probability(games)
+        assert set(wp.keys()) == {'home_win_pct', 'away_win_pct', 'tie_pct'}
