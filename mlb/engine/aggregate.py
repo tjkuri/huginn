@@ -19,6 +19,14 @@ from mlb.data.models import (
 )
 from mlb.engine.simulate import simulate_game
 
+_HIT_OUTCOMES = {Outcome.SINGLE, Outcome.DOUBLE, Outcome.TRIPLE, Outcome.HR}
+_TOTAL_BASES = {
+    Outcome.SINGLE: 1,
+    Outcome.DOUBLE: 2,
+    Outcome.TRIPLE: 3,
+    Outcome.HR: 4,
+}
+
 
 def run_simulations(
     game_context: GameContext,
@@ -88,3 +96,67 @@ def compute_win_probability(games: list[SimulatedGame]) -> dict:
         'away_win_pct': away_wins / n,
         'tie_pct': ties / n,
     }
+
+
+def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats]:
+    """Aggregate individual player performance across all simulations.
+
+    Returns a dict keyed by player_id. Per-game stats (e.g. hits_per_game) are
+    the mean across all N simulations, with standard deviations alongside them.
+    This powers player prop bets: 'Will Player X get over 1.5 hits?' is a direct
+    lookup against the hits distribution.
+    """
+    # per_game[player_id] -> list of per-game stat dicts, one entry per simulation
+    per_game: dict[str, list[dict]] = defaultdict(list)
+
+    for game in games:
+        # Tally stats for each player within this one simulation
+        game_stats: dict[str, dict] = defaultdict(
+            lambda: {'pa': 0, 'hits': 0, 'hr': 0, 'bb': 0, 'k': 0, 'tb': 0, 'rbi': 0}
+        )
+        for pa in game.pa_results:
+            pid = pa.batter_id
+            s = game_stats[pid]
+            s['pa'] += 1
+            if pa.outcome in _HIT_OUTCOMES:
+                s['hits'] += 1
+                s['tb'] += _TOTAL_BASES[pa.outcome]
+            if pa.outcome == Outcome.HR:
+                s['hr'] += 1
+            if pa.outcome in (Outcome.BB, Outcome.HBP):
+                s['bb'] += 1
+            if pa.outcome == Outcome.K:
+                s['k'] += 1
+            s['rbi'] += pa.runs_scored
+
+        for pid, s in game_stats.items():
+            per_game[pid].append(s)
+
+    result: dict[str, PlayerSimStats] = {}
+    for pid, game_stats_list in per_game.items():
+        hits = np.array([s['hits'] for s in game_stats_list], dtype=float)
+        hr = np.array([s['hr'] for s in game_stats_list], dtype=float)
+        bb = np.array([s['bb'] for s in game_stats_list], dtype=float)
+        k = np.array([s['k'] for s in game_stats_list], dtype=float)
+        tb = np.array([s['tb'] for s in game_stats_list], dtype=float)
+        pa = np.array([s['pa'] for s in game_stats_list], dtype=float)
+        rbi = np.array([s['rbi'] for s in game_stats_list], dtype=float)
+
+        result[pid] = PlayerSimStats(
+            player_id=pid,
+            name=pid,
+            pa_per_game=float(np.mean(pa)),
+            hits_per_game=float(np.mean(hits)),
+            hr_per_game=float(np.mean(hr)),
+            bb_per_game=float(np.mean(bb)),
+            k_per_game=float(np.mean(k)),
+            runs_per_game=float(np.mean(rbi)),
+            total_bases_per_game=float(np.mean(tb)),
+            hits_per_game_std=float(np.std(hits)),
+            hr_per_game_std=float(np.std(hr)),
+            bb_per_game_std=float(np.std(bb)),
+            k_per_game_std=float(np.std(k)),
+            total_bases_per_game_std=float(np.std(tb)),
+        )
+
+    return result

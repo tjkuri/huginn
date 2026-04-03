@@ -6,7 +6,7 @@ from mlb.config import Hand, Outcome, LEAGUE_AVERAGES
 from mlb.data.models import (
     BatterStats, PitcherStats, Lineup, ParkFactors, GameContext, SimulatedGame,
 )
-from mlb.engine.aggregate import run_simulations, compute_run_distributions, compute_win_probability
+from mlb.engine.aggregate import run_simulations, compute_run_distributions, compute_win_probability, compute_player_stats
 
 
 # ── Shared fixtures ──────────────────────────────────────────────────────────
@@ -164,3 +164,52 @@ class TestComputeWinProbability:
         games = run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=50, base_seed=5)
         wp = compute_win_probability(games)
         assert set(wp.keys()) == {'home_win_pct', 'away_win_pct', 'tie_pct'}
+
+
+class TestComputePlayerStats:
+
+    def test_all_players_present(self):
+        """Every player ID from both lineups appears in the output."""
+        ctx = _make_game_context()
+        games = run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=100, base_seed=42)
+        stats = compute_player_stats(games)
+
+        away_ids = {b.player_id for b in ctx.away_lineup.batting_order}
+        home_ids = {b.player_id for b in ctx.home_lineup.batting_order}
+        all_ids = away_ids | home_ids
+
+        assert all_ids.issubset(set(stats.keys()))
+
+    def test_hr_hitter_has_higher_hr_rate(self):
+        """Batter with HR=0.20 shows higher hr_per_game than batter with HR=0.03."""
+        hr_rates = dict(_REALISTIC_RATES)
+        hr_rates['HR'] = 0.20
+        hr_rates['OUT'] = _REALISTIC_RATES['OUT'] - (0.20 - _REALISTIC_RATES['HR'])
+
+        hr_lineup = _make_lineup('HR_', 'HRSp', rates=hr_rates)
+        normal_lineup = _make_lineup('NRM', 'NrmSP')
+        ctx = _make_game_context(away_lineup=hr_lineup, home_lineup=normal_lineup)
+        games = run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=500, base_seed=42)
+        stats = compute_player_stats(games)
+
+        hr_player_avg = np.mean([stats[pid].hr_per_game for pid in stats if pid.startswith('HR_')])
+        normal_player_avg = np.mean([stats[pid].hr_per_game for pid in stats if pid.startswith('NRM')])
+
+        assert hr_player_avg > normal_player_avg
+
+    def test_stats_have_expected_fields(self):
+        """PlayerSimStats objects have all required fields with positive pa_per_game."""
+        ctx = _make_game_context()
+        games = run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=50, base_seed=1)
+        stats = compute_player_stats(games)
+
+        pid = next(iter(stats))
+        s = stats[pid]
+        assert hasattr(s, 'pa_per_game')
+        assert hasattr(s, 'hits_per_game')
+        assert hasattr(s, 'hr_per_game')
+        assert hasattr(s, 'bb_per_game')
+        assert hasattr(s, 'k_per_game')
+        assert hasattr(s, 'total_bases_per_game')
+        assert hasattr(s, 'hits_per_game_std')
+        assert s.pa_per_game > 0
