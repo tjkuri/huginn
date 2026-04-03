@@ -160,3 +160,91 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
         )
 
     return result
+
+
+def _american_odds(probability: float) -> float:
+    """Convert a win probability to no-vig American odds."""
+    probability = max(0.001, min(0.999, probability))
+    if probability > 0.5:
+        return -(probability / (1.0 - probability)) * 100
+    elif probability < 0.5:
+        return ((1.0 - probability) / probability) * 100
+    return 100.0  # even
+
+
+def _over_under_table(run_values: np.ndarray, lines: list[float]) -> dict:
+    """Build an over/under table for a sequence of run values."""
+    n = len(run_values)
+    return {
+        line: {
+            'over_pct': float(np.sum(run_values > line) / n),
+            'under_pct': float(np.sum(run_values < line) / n),
+            'push_pct': float(np.sum(run_values == line) / n),
+        }
+        for line in lines
+    }
+
+
+def compute_betting_lines(games: list[SimulatedGame], run_distributions: dict) -> dict:
+    """Compute model-implied probabilities for common bet types.
+
+    Args:
+        games: list of SimulatedGame from run_simulations.
+        run_distributions: output of compute_run_distributions (passed for context;
+            raw game data is used directly for probability calculations).
+
+    Returns a nested dict with keys: totals, moneyline, run_line, team_totals.
+    """
+    n = len(games)
+    away_arr = np.array([g.away_runs for g in games], dtype=float)
+    home_arr = np.array([g.home_runs for g in games], dtype=float)
+    total_arr = away_arr + home_arr
+
+    # ── Game totals ──────────────────────────────────────────────────────────
+    total_lines = [l / 2 for l in range(11, 26)]  # 5.5 to 12.5 in 0.5 steps
+    totals = _over_under_table(total_arr, total_lines)
+
+    # ── Moneyline ────────────────────────────────────────────────────────────
+    home_win_pct = float(np.sum(home_arr > away_arr) / n)
+    away_win_pct = float(np.sum(away_arr > home_arr) / n)
+    moneyline = {
+        'home': {
+            'probability': home_win_pct,
+            'american': _american_odds(home_win_pct),
+            'no_vig_line': _american_odds(home_win_pct),
+        },
+        'away': {
+            'probability': away_win_pct,
+            'american': _american_odds(away_win_pct),
+            'no_vig_line': _american_odds(away_win_pct),
+        },
+    }
+
+    # ── Run line (-1.5 / +1.5) ───────────────────────────────────────────────
+    diff = home_arr - away_arr  # positive = home leads
+    if home_win_pct >= away_win_pct:
+        favorite_cover = float(np.sum(diff >= 2) / n)    # home wins by 2+
+        underdog_cover = float(np.sum(diff <= 1) / n)    # home wins by <=1 or away wins
+    else:
+        favorite_cover = float(np.sum(diff <= -2) / n)   # away wins by 2+
+        underdog_cover = float(np.sum(diff >= -1) / n)   # away wins by <=1 or home wins
+
+    run_line = {
+        'favorite': 'home' if home_win_pct >= away_win_pct else 'away',
+        'favorite_cover_pct': favorite_cover,
+        'underdog_cover_pct': underdog_cover,
+    }
+
+    # ── Team totals ──────────────────────────────────────────────────────────
+    team_lines = [l / 2 for l in range(5, 18)]  # 2.5 to 8.5 in 0.5 steps
+    team_totals = {
+        'away': _over_under_table(away_arr, team_lines),
+        'home': _over_under_table(home_arr, team_lines),
+    }
+
+    return {
+        'totals': totals,
+        'moneyline': moneyline,
+        'run_line': run_line,
+        'team_totals': team_totals,
+    }

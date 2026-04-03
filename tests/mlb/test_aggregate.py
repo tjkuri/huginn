@@ -6,7 +6,7 @@ from mlb.config import Hand, Outcome, LEAGUE_AVERAGES
 from mlb.data.models import (
     BatterStats, PitcherStats, Lineup, ParkFactors, GameContext, SimulatedGame,
 )
-from mlb.engine.aggregate import run_simulations, compute_run_distributions, compute_win_probability, compute_player_stats
+from mlb.engine.aggregate import run_simulations, compute_run_distributions, compute_win_probability, compute_player_stats, compute_betting_lines
 
 
 # ── Shared fixtures ──────────────────────────────────────────────────────────
@@ -213,3 +213,68 @@ class TestComputePlayerStats:
         assert hasattr(s, 'total_bases_per_game')
         assert hasattr(s, 'hits_per_game_std')
         assert s.pa_per_game > 0
+
+
+class TestComputeBettingLines:
+
+    def _setup(self, n: int = 300) -> tuple[list[SimulatedGame], dict]:
+        ctx = _make_game_context()
+        games = run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=n, base_seed=42)
+        from mlb.engine.aggregate import compute_run_distributions
+        run_dists = compute_run_distributions(games)
+        return games, run_dists
+
+    def test_over_under_structure(self):
+        """Totals output contains lines from 5.5 to 12.5; each sums to 1.0."""
+        games, run_dists = self._setup()
+        lines = compute_betting_lines(games, run_dists)
+
+        expected_lines = {l / 2 for l in range(11, 26)}  # 5.5 to 12.5 step 0.5
+        assert set(lines['totals'].keys()) == expected_lines
+
+        for line, entry in lines['totals'].items():
+            total = entry['over_pct'] + entry['under_pct'] + entry['push_pct']
+            assert abs(total - 1.0) < 1e-9, f"totals line {line} does not sum to 1.0"
+
+    def test_over_under_monotonicity(self):
+        """over_pct decreases (or stays equal) as the line increases."""
+        games, run_dists = self._setup(500)
+        lines = compute_betting_lines(games, run_dists)
+        assert lines['totals'][6.5]['over_pct'] >= lines['totals'][7.5]['over_pct']
+        assert lines['totals'][7.5]['over_pct'] >= lines['totals'][8.5]['over_pct']
+        assert lines['totals'][8.5]['over_pct'] >= lines['totals'][9.5]['over_pct']
+
+    def test_moneyline_favorite_negative(self):
+        """Favorite has negative American odds; underdog has positive."""
+        # Use a rigged game to guarantee clear favorite/underdog
+        k_only_rates = {o.value: 0.0 for o in Outcome}
+        k_only_rates['K'] = 1.0
+        away_lineup = _make_lineup('AWY', 'AwaySP', rates=k_only_rates)
+        home_lineup = _make_lineup('HME', 'HomeSP')
+        ctx = _make_game_context(away_lineup=away_lineup, home_lineup=home_lineup)
+        games = run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=200, base_seed=7)
+        from mlb.engine.aggregate import compute_run_distributions
+        run_dists = compute_run_distributions(games)
+        lines = compute_betting_lines(games, run_dists)
+        # Home is heavy favorite → negative american odds
+        assert lines['moneyline']['home']['american'] < 0
+        # Away is underdog → positive american odds
+        assert lines['moneyline']['away']['american'] > 0
+
+    def test_all_sections_present(self):
+        """betting_lines contains totals, moneyline, run_line, team_totals."""
+        games, run_dists = self._setup(100)
+        lines = compute_betting_lines(games, run_dists)
+        assert set(lines.keys()) == {'totals', 'moneyline', 'run_line', 'team_totals'}
+        assert 'away' in lines['team_totals']
+        assert 'home' in lines['team_totals']
+
+    def test_team_totals_structure(self):
+        """team_totals contains lines from 2.5 to 8.5 and each sums to 1.0."""
+        games, run_dists = self._setup(200)
+        lines = compute_betting_lines(games, run_dists)
+        expected = {l / 2 for l in range(5, 18)}  # 2.5 to 8.5 step 0.5
+        assert set(lines['team_totals']['home'].keys()) == expected
+        for line, entry in lines['team_totals']['away'].items():
+            total = entry['over_pct'] + entry['under_pct'] + entry['push_pct']
+            assert abs(total - 1.0) < 1e-9
