@@ -5,8 +5,12 @@ import numpy as np
 from mlb.config import Hand, Outcome, LEAGUE_AVERAGES
 from mlb.data.models import (
     BatterStats, PitcherStats, Lineup, ParkFactors, GameContext, SimulatedGame,
+    SimulationResult,
 )
-from mlb.engine.aggregate import run_simulations, compute_run_distributions, compute_win_probability, compute_player_stats, compute_betting_lines
+from mlb.engine.aggregate import (
+    run_simulations, compute_run_distributions, compute_win_probability,
+    compute_player_stats, compute_betting_lines, aggregate_simulations,
+)
 
 
 # ── Shared fixtures ──────────────────────────────────────────────────────────
@@ -278,3 +282,41 @@ class TestComputeBettingLines:
         for line, entry in lines['team_totals']['away'].items():
             total = entry['over_pct'] + entry['under_pct'] + entry['push_pct']
             assert abs(total - 1.0) < 1e-9
+
+
+class TestAggregateSimulations:
+
+    def test_full_integration(self):
+        """500 sims: SimulationResult has all expected fields populated."""
+        ctx = _make_game_context()
+        result = aggregate_simulations(ctx, LEAGUE_AVERAGES, n_simulations=500, base_seed=42)
+
+        assert isinstance(result, SimulationResult)
+        assert result.game_id == ctx.game_id
+        assert result.n_simulations == 500
+        assert result.away_team == ctx.away_lineup.team_name
+        assert result.home_team == ctx.home_lineup.team_name
+
+        # Run stats
+        assert result.total_runs_mean > 0
+        assert result.total_runs_std > 0
+        assert result.away_runs_std > 0
+        assert result.home_runs_std > 0
+
+        # Win probabilities
+        total = result.home_win_pct + result.away_win_pct
+        assert 0.98 <= total <= 1.0  # tie_pct may eat a small slice
+
+        # Player stats
+        assert len(result.player_stats) > 0
+        some_stat = next(iter(result.player_stats.values()))
+        assert some_stat.pa_per_game > 0
+
+        # Betting lines
+        assert set(result.betting_lines.keys()) == {'totals', 'moneyline', 'run_line', 'team_totals'}
+        assert 5.5 in result.betting_lines['totals']
+        assert 12.5 in result.betting_lines['totals']
+
+        # Run distributions
+        assert set(result.run_distributions.keys()) == {'away_runs', 'home_runs', 'total_runs', 'run_diff'}
+        assert result.run_distributions['total_runs']['mean'] > 0

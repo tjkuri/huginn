@@ -248,3 +248,41 @@ def compute_betting_lines(games: list[SimulatedGame], run_distributions: dict) -
         'run_line': run_line,
         'team_totals': team_totals,
     }
+
+
+def aggregate_simulations(
+    game_context: GameContext,
+    league_averages: dict,
+    n_simulations: int = 10000,
+    base_seed: int | None = None,
+) -> SimulationResult:
+    """Run N simulations and return a fully populated SimulationResult.
+
+    This is the main entry point for the aggregation module. All bet-relevant
+    outputs (run distributions, win probabilities, player stats, betting lines)
+    are computed here and packed into a single SimulationResult.
+    """
+    games = run_simulations(game_context, league_averages, n_simulations, base_seed)
+
+    run_dists = compute_run_distributions(games)
+    win_probs = compute_win_probability(games)
+    player_stats = compute_player_stats(games)
+    betting_lines = compute_betting_lines(games, run_dists)
+
+    return SimulationResult(
+        game_id=game_context.game_id,
+        n_simulations=n_simulations,
+        away_team=game_context.away_lineup.team_name,
+        home_team=game_context.home_lineup.team_name,
+        away_runs_mean=run_dists['away_runs']['mean'],
+        away_runs_std=run_dists['away_runs']['std'],
+        home_runs_mean=run_dists['home_runs']['mean'],
+        home_runs_std=run_dists['home_runs']['std'],
+        total_runs_mean=run_dists['total_runs']['mean'],
+        total_runs_std=run_dists['total_runs']['std'],
+        home_win_pct=win_probs['home_win_pct'],
+        away_win_pct=win_probs['away_win_pct'],
+        player_stats=player_stats,
+        betting_lines=betting_lines,
+        run_distributions=run_dists,
+    )
