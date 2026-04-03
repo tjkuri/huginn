@@ -228,3 +228,117 @@ def get_current_pitcher(
     # Clamp to last available arm if bullpen exhausted
     idx = min(bullpen_idx, len(lineup.bullpen) - 1)
     return lineup.bullpen[idx]
+
+
+# Approximate pitches per PA for pitch count tracking
+_PITCHES_PER_PA = 4
+
+
+def simulate_half_inning(
+    game_context: GameContext,
+    game_state: GameState,
+    is_top: bool,
+    league_averages: dict,
+    rng: np.random.Generator,
+) -> list[PAResult]:
+    """Simulate one half-inning (until 3 outs or walk-off).
+
+    Mutates game_state in place (score, batting index, pitch count,
+    bullpen index). Returns the list of PAResults for this half-inning.
+    """
+    results: list[PAResult] = []
+    outs = 0
+    bases = BaseState()
+
+    # Determine batting team and defensive team
+    if is_top:
+        batting_lineup = game_context.away_lineup
+        defensive_lineup = game_context.home_lineup
+        is_defense_home = True
+    else:
+        batting_lineup = game_context.home_lineup
+        defensive_lineup = game_context.away_lineup
+        is_defense_home = False
+
+    while outs < 3:
+        # Get current batter
+        if is_top:
+            batter_idx = game_state.away_batting_index
+        else:
+            batter_idx = game_state.home_batting_index
+        batter = batting_lineup.batting_order[batter_idx]
+
+        # Retrieve pitch count and bullpen state for the defensive team
+        if is_defense_home:
+            pitch_count = game_state.home_pitch_count
+            bullpen_idx = game_state.home_bullpen_index
+        else:
+            pitch_count = game_state.away_pitch_count
+            bullpen_idx = game_state.away_bullpen_index
+
+        # Approximate innings pitched from pitch count
+        innings_pitched = pitch_count / (_PITCHES_PER_PA * 3)
+
+        # Track runs allowed (runs scored by the batting team so far)
+        if is_defense_home:
+            runs_allowed = game_state.away_score
+        else:
+            runs_allowed = game_state.home_score
+
+        # Check if starter should be pulled
+        if bullpen_idx < 0 and should_pull_starter(pitch_count, innings_pitched, runs_allowed):
+            if is_defense_home:
+                game_state.home_bullpen_index = 0
+                game_state.home_pitch_count = 0
+            else:
+                game_state.away_bullpen_index = 0
+                game_state.away_pitch_count = 0
+
+        pitcher = get_current_pitcher(defensive_lineup, game_state, is_home=is_defense_home)
+
+        # Build probability table and sample outcome
+        prob_table = build_pa_probability_table(
+            batter, pitcher, game_context.park_factors,
+            game_context.weather, league_averages,
+        )
+        outcome = resolve_pa_outcome(prob_table, rng)
+
+        # Record base state before advancement
+        runners_before = bases
+
+        # Advance runners
+        bases, runs_scored, outs = advance_runners(bases, outcome, outs, rng)
+
+        # Update score
+        if is_top:
+            game_state.away_score += runs_scored
+        else:
+            game_state.home_score += runs_scored
+
+        # Record PA result
+        results.append(PAResult(
+            outcome=outcome,
+            batter_id=batter.player_id,
+            pitcher_id=pitcher.player_id,
+            inning=game_state.inning,
+            runners_before=runners_before,
+            runs_scored=runs_scored,
+        ))
+
+        # Advance batting order (mod 9)
+        if is_top:
+            game_state.away_batting_index = (batter_idx + 1) % 9
+        else:
+            game_state.home_batting_index = (batter_idx + 1) % 9
+
+        # Increment pitch count for defensive pitcher
+        if is_defense_home:
+            game_state.home_pitch_count += _PITCHES_PER_PA
+        else:
+            game_state.away_pitch_count += _PITCHES_PER_PA
+
+        # Walk-off check: bottom of 9th+, home leads → end immediately
+        if not is_top and game_state.inning >= 9 and game_state.home_score > game_state.away_score:
+            break
+
+    return results

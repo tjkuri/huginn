@@ -355,8 +355,8 @@ class TestAdvanceRunnersHR:
 
 
 from mlb.config import LEAGUE_AVERAGES
-from mlb.data.models import GameState, Lineup, PitcherStats
-from mlb.engine.simulate import should_pull_starter, get_current_pitcher
+from mlb.data.models import GameContext, GameState, Lineup, PAResult, ParkFactors, PitcherStats
+from mlb.engine.simulate import should_pull_starter, get_current_pitcher, simulate_half_inning
 
 
 def _make_pitcher(name: str, throws: str = 'R') -> PitcherStats:
@@ -459,3 +459,123 @@ class TestGetCurrentPitcher:
         state = GameState(home_bullpen_index=5)
         pitcher = get_current_pitcher(lineup, state, is_home=True)
         assert pitcher.name == 'OnlyRelief'
+
+
+def _make_park_factors() -> ParkFactors:
+    """Neutral park factors (all 1.0)."""
+    neutral = {o.value: 1.0 for o in Outcome}
+    return ParkFactors(
+        venue_id='TEST', venue_name='Test Park',
+        factors_vs_lhb=dict(neutral),
+        factors_vs_rhb=dict(neutral),
+    )
+
+
+def _make_k_only_pitcher(name: str = 'KBot') -> PitcherStats:
+    """Pitcher whose rates are K=1.0 (everything else ~0)."""
+    rates = {o.value: 0.0 for o in Outcome}
+    rates['K'] = 1.0
+    return PitcherStats(
+        player_id=name, name=name, throws=Hand.RIGHT,
+        pa_against=500, rates=rates,
+    )
+
+
+def _make_hr_only_pitcher(name: str = 'HRBot') -> PitcherStats:
+    """Pitcher whose rates are HR=1.0 (gives up HRs to everyone)."""
+    rates = {o.value: 0.0 for o in Outcome}
+    rates['HR'] = 1.0
+    return PitcherStats(
+        player_id=name, name=name, throws=Hand.RIGHT,
+        pa_against=500, rates=rates,
+    )
+
+
+def _make_game_context(
+    away_lineup=None,
+    home_lineup=None,
+) -> GameContext:
+    """Create a GameContext with test lineups."""
+    return GameContext(
+        game_id='test-001',
+        date='2026-04-01',
+        away_lineup=away_lineup or _make_lineup('AwaySP'),
+        home_lineup=home_lineup or _make_lineup('HomeSP'),
+        park_factors=_make_park_factors(),
+    )
+
+
+class TestSimulateHalfInning:
+    """simulate_half_inning: one half-inning of play."""
+
+    def test_three_strikeouts(self):
+        """K-only pitcher produces exactly 3 Ks and 0 runs."""
+        home_lineup = _make_lineup('HomeSP')
+        home_lineup.starting_pitcher = _make_k_only_pitcher()
+        ctx = _make_game_context(home_lineup=home_lineup)
+        state = GameState()
+        rng = np.random.default_rng(42)
+
+        results = simulate_half_inning(ctx, state, is_top=True, league_averages=LEAGUE_AVERAGES, rng=rng)
+
+        assert len(results) == 3
+        assert all(r.outcome == Outcome.K for r in results)
+        assert state.away_score == 0
+
+    def test_batting_order_advances(self):
+        """Batters cycle through the order correctly."""
+        home_lineup = _make_lineup('HomeSP')
+        home_lineup.starting_pitcher = _make_k_only_pitcher()
+        ctx = _make_game_context(home_lineup=home_lineup)
+        state = GameState(away_batting_index=7)  # Start at 8th batter (0-indexed)
+        rng = np.random.default_rng(42)
+
+        results = simulate_half_inning(ctx, state, is_top=True, league_averages=LEAGUE_AVERAGES, rng=rng)
+
+        # 3 Ks: batters 7, 8, 0 (wraps around)
+        assert results[0].batter_id == 'b7'
+        assert results[1].batter_id == 'b8'
+        assert results[2].batter_id == 'b0'
+        assert state.away_batting_index == 1  # next batter for next half-inning
+
+    def test_walk_off_hr(self):
+        """Bottom of 9th+, home trailing by 1, HR ends inning immediately."""
+        away_lineup = _make_lineup('AwaySP')
+        away_lineup.starting_pitcher = _make_hr_only_pitcher()
+        ctx = _make_game_context(away_lineup=away_lineup)
+        state = GameState(inning=9, is_top=False, away_score=1, home_score=0)
+        rng = np.random.default_rng(42)
+
+        results = simulate_half_inning(ctx, state, is_top=False, league_averages=LEAGUE_AVERAGES, rng=rng)
+
+        # Home takes the lead — game ends on walk-off
+        assert state.home_score > state.away_score
+        assert any(r.outcome == Outcome.HR for r in results)
+
+    def test_pa_results_have_correct_fields(self):
+        """Each PAResult has correct inning, runner state, and IDs."""
+        home_lineup = _make_lineup('HomeSP')
+        home_lineup.starting_pitcher = _make_k_only_pitcher()
+        ctx = _make_game_context(home_lineup=home_lineup)
+        state = GameState(inning=3)
+        rng = np.random.default_rng(42)
+
+        results = simulate_half_inning(ctx, state, is_top=True, league_averages=LEAGUE_AVERAGES, rng=rng)
+
+        for r in results:
+            assert isinstance(r, PAResult)
+            assert r.inning == 3
+            assert r.pitcher_id == 'KBot'
+            assert isinstance(r.runners_before, BaseState)
+
+    def test_pitch_count_increments(self):
+        """Pitcher's pitch count increases 4 per PA (3 PAs * 4 = 12)."""
+        home_lineup = _make_lineup('HomeSP')
+        home_lineup.starting_pitcher = _make_k_only_pitcher()
+        ctx = _make_game_context(home_lineup=home_lineup)
+        state = GameState()
+        rng = np.random.default_rng(42)
+
+        simulate_half_inning(ctx, state, is_top=True, league_averages=LEAGUE_AVERAGES, rng=rng)
+
+        assert state.home_pitch_count == 12
