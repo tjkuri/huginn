@@ -188,6 +188,12 @@ class PlayerSimStats:
     bb_per_game: float       # mean walks per game
     k_per_game: float        # mean strikeouts per game
     runs_per_game: float     # mean runs scored (batters) or allowed (pitchers)
+    total_bases_per_game: float = 0.0
+    hits_per_game_std: float = 0.0
+    hr_per_game_std: float = 0.0
+    bb_per_game_std: float = 0.0
+    k_per_game_std: float = 0.0
+    total_bases_per_game_std: float = 0.0
 
 
 @dataclass
@@ -206,3 +212,5 @@ class SimulationResult:
     home_win_pct: float
     away_win_pct: float
     player_stats: dict[str, PlayerSimStats]  # keyed by player_id
+    betting_lines: dict = field(default_factory=dict)
+    run_distributions: dict = field(default_factory=dict)
