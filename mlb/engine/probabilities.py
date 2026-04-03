@@ -80,3 +80,59 @@ def apply_park_factors(
         else rate
         for outcome, rate in rates.items()
     }
+
+
+# ── Weather adjustment constants ─────────────────────────────────────────────
+# Based on Alan Nathan's batted ball physics research.
+
+_TEMP_BASELINE_F = 70.0
+_TEMP_HR_BASE = 1.025     # per 10°F above baseline
+_TEMP_XBH_BASE = 1.01     # 2B/3B per 10°F above baseline
+_WIND_HR_COEFF = 0.008    # per mph
+_WIND_2B_COEFF = 0.003    # per mph
+_WEATHER_FLOOR = 0.001    # minimum rate (weather can't make outcomes impossible)
+
+
+def apply_weather_adjustments(
+    rates: dict[str, float],
+    weather: Weather | None,
+) -> dict[str, float]:
+    """Adjust rates for temperature and wind effects.
+
+    Returns rates unchanged (as a copy) if weather is None or is_indoor.
+    Temperature affects HR, 2B, 3B. Wind affects HR, 2B.
+    All results clamped to >= 0.001.
+    """
+    if weather is None or weather.is_indoor:
+        return dict(rates)
+
+    adjusted = dict(rates)
+
+    # Temperature adjustments (exponential per 10°F deviation)
+    temp_delta = (weather.temperature_f - _TEMP_BASELINE_F) / 10.0
+    adjusted['HR'] = rates.get('HR', 0.0) * (_TEMP_HR_BASE ** temp_delta)
+    adjusted['2B'] = rates.get('2B', 0.0) * (_TEMP_XBH_BASE ** temp_delta)
+    adjusted['3B'] = rates.get('3B', 0.0) * (_TEMP_XBH_BASE ** temp_delta)
+
+    # Wind adjustments (linear with speed, direction-dependent)
+    if weather.wind_direction == WindDirection.OUT_TO_CF:
+        adjusted['HR'] *= (1.0 + _WIND_HR_COEFF * weather.wind_speed_mph)
+        adjusted['2B'] *= (1.0 + _WIND_2B_COEFF * weather.wind_speed_mph)
+    elif weather.wind_direction == WindDirection.IN_FROM_CF:
+        adjusted['HR'] *= (1.0 - _WIND_HR_COEFF * weather.wind_speed_mph)
+        adjusted['2B'] *= (1.0 - _WIND_2B_COEFF * weather.wind_speed_mph)
+
+    # Clamp: weather shouldn't make any outcome impossible
+    for outcome in adjusted:
+        adjusted[outcome] = max(_WEATHER_FLOOR, adjusted[outcome])
+
+    return adjusted
+
+
+def normalize(rates: dict[str, float]) -> dict[str, float]:
+    """Normalize rates to sum to 1.0. Uniform fallback if sum is 0."""
+    total = sum(rates.values())
+    if total == 0:
+        n = len(rates)
+        return {k: 1.0 / n for k in rates}
+    return {k: v / total for k, v in rates.items()}

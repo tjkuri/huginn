@@ -121,3 +121,125 @@ class TestApplyParkFactors:
         pf = {'OUT': 0.80}
         result = apply_park_factors(rates, pf)
         assert result['OUT'] == 0.45
+
+
+from mlb.config import WindDirection
+from mlb.data.models import Weather
+from mlb.engine.probabilities import apply_weather_adjustments, normalize
+
+
+def _base_rates():
+    """Baseline rates for weather tests."""
+    return {
+        'K': 0.220, 'BB': 0.080, 'HBP': 0.012,
+        '1B': 0.150, '2B': 0.048, '3B': 0.005, 'HR': 0.035,
+        'OUT': 0.450,
+    }
+
+
+class TestApplyWeatherAdjustments:
+    def test_hot_day_increases_hr(self):
+        """90°F → HR should increase vs 70°F baseline."""
+        rates = _base_rates()
+        weather = Weather(90.0, 0.0, WindDirection.CALM, 50.0)
+        result = apply_weather_adjustments(rates, weather)
+        assert result['HR'] > rates['HR']
+
+    def test_cold_day_decreases_hr(self):
+        """50°F → HR should decrease vs 70°F baseline."""
+        rates = _base_rates()
+        weather = Weather(50.0, 0.0, WindDirection.CALM, 50.0)
+        result = apply_weather_adjustments(rates, weather)
+        assert result['HR'] < rates['HR']
+
+    def test_baseline_temp_no_change(self):
+        """70°F (baseline) → no temperature adjustment."""
+        rates = _base_rates()
+        weather = Weather(70.0, 0.0, WindDirection.CALM, 50.0)
+        result = apply_weather_adjustments(rates, weather)
+        assert result['HR'] == pytest.approx(rates['HR'], abs=1e-9)
+        assert result['2B'] == pytest.approx(rates['2B'], abs=1e-9)
+
+    def test_wind_out_increases_hr(self):
+        """15 mph wind out to CF → HR increases by known amount."""
+        rates = _base_rates()
+        weather = Weather(70.0, 15.0, WindDirection.OUT_TO_CF, 50.0)
+        result = apply_weather_adjustments(rates, weather)
+        assert result['HR'] == pytest.approx(0.035 * 1.12, abs=0.0001)
+        assert result['2B'] == pytest.approx(0.048 * 1.045, abs=0.0001)
+
+    def test_wind_in_decreases_hr(self):
+        """15 mph wind in from CF → HR decreases."""
+        rates = _base_rates()
+        weather = Weather(70.0, 15.0, WindDirection.IN_FROM_CF, 50.0)
+        result = apply_weather_adjustments(rates, weather)
+        assert result['HR'] < rates['HR']
+
+    def test_cross_wind_no_change(self):
+        """Cross wind → no wind adjustment."""
+        rates = _base_rates()
+        weather = Weather(70.0, 15.0, WindDirection.CROSS, 50.0)
+        result = apply_weather_adjustments(rates, weather)
+        assert result['HR'] == pytest.approx(rates['HR'], abs=1e-9)
+
+    def test_indoor_skips_all_adjustments(self):
+        """is_indoor=True → no changes, even with extreme conditions."""
+        rates = _base_rates()
+        weather = Weather(110.0, 30.0, WindDirection.OUT_TO_CF, 90.0, is_indoor=True)
+        result = apply_weather_adjustments(rates, weather)
+        for outcome in rates:
+            assert result[outcome] == rates[outcome]
+
+    def test_none_weather_returns_copy(self):
+        """None weather → return unchanged copy."""
+        rates = _base_rates()
+        result = apply_weather_adjustments(rates, None)
+        assert result == rates
+        assert result is not rates  # must be a copy
+
+    def test_extreme_cold_clamps_above_minimum(self):
+        """Very low rates + extreme cold → clamped to 0.001 minimum."""
+        rates = {'HR': 0.002, 'K': 0.20, 'BB': 0.08, 'HBP': 0.01,
+                 '1B': 0.15, '2B': 0.002, '3B': 0.001, 'OUT': 0.45}
+        weather = Weather(-20.0, 0.0, WindDirection.CALM, 50.0)
+        result = apply_weather_adjustments(rates, weather)
+        for outcome in result:
+            assert result[outcome] >= 0.001
+
+    def test_does_not_mutate_input(self):
+        """Input dict should not be modified."""
+        rates = _base_rates()
+        original = dict(rates)
+        weather = Weather(90.0, 15.0, WindDirection.OUT_TO_CF, 50.0)
+        apply_weather_adjustments(rates, weather)
+        assert rates == original
+
+
+class TestNormalize:
+    def test_sums_to_one(self):
+        """Rates summing to 1.3 get normalized to 1.0."""
+        rates = {'K': 0.26, 'BB': 0.10, 'HBP': 0.013,
+                 '1B': 0.19, '2B': 0.065, '3B': 0.006, 'HR': 0.046,
+                 'OUT': 0.620}
+        result = normalize(rates)
+        assert sum(result.values()) == pytest.approx(1.0)
+
+    def test_preserves_ratios(self):
+        """Relative proportions are maintained."""
+        rates = {'A': 0.2, 'B': 0.4, 'C': 0.7}
+        result = normalize(rates)
+        assert result['B'] / result['A'] == pytest.approx(2.0)
+        assert result['C'] / result['A'] == pytest.approx(3.5)
+
+    def test_already_normalized(self):
+        """Rates that already sum to 1.0 are unchanged."""
+        rates = {'K': 0.25, 'OUT': 0.75}
+        result = normalize(rates)
+        assert result['K'] == pytest.approx(0.25)
+        assert result['OUT'] == pytest.approx(0.75)
+
+    def test_zero_sum_uniform_fallback(self):
+        """All-zero rates → uniform distribution fallback."""
+        rates = {'A': 0.0, 'B': 0.0, 'C': 0.0}
+        result = normalize(rates)
+        assert result == pytest.approx({'A': 1 / 3, 'B': 1 / 3, 'C': 1 / 3})
