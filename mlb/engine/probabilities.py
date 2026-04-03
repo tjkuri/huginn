@@ -43,3 +43,40 @@ def odds_ratio(p_batter: float, p_pitcher: float, p_league: float) -> float:
     # Convert back to probability, clamped to [0, 1]
     p_matchup = o_matchup / (1.0 + o_matchup)
     return max(0.0, min(1.0, p_matchup))
+
+
+def compute_matchup_rates(
+    batter: BatterStats,
+    pitcher: PitcherStats,
+    league_averages: dict[str, float],
+) -> dict[str, float]:
+    """Apply Odds Ratio to every outcome. Returns raw rates (not yet normalized)."""
+    return {
+        outcome.value: odds_ratio(
+            batter.rates.get(outcome.value, 0.0),
+            pitcher.rates.get(outcome.value, 0.0),
+            league_averages.get(outcome.value, 0.0),
+        )
+        for outcome in Outcome
+    }
+
+
+# Outcomes adjusted by park factors. HBP is not park-dependent; OUT is derived.
+_PARK_ADJUSTED = {'K', 'BB', '1B', '2B', '3B', 'HR'}
+
+
+def apply_park_factors(
+    rates: dict[str, float],
+    park_factors: dict[str, float],
+) -> dict[str, float]:
+    """Multiply outcome rates by park factor multipliers.
+
+    Only adjusts outcomes in _PARK_ADJUSTED. HBP and OUT are left unchanged.
+    Missing factors default to 1.0 (no adjustment).
+    """
+    return {
+        outcome: rate * park_factors.get(outcome, 1.0)
+        if outcome in _PARK_ADJUSTED
+        else rate
+        for outcome, rate in rates.items()
+    }
