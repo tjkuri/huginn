@@ -42,3 +42,148 @@ class TestResolvePAOutcome:
         rng = np.random.default_rng(42)
         result = resolve_pa_outcome(table, rng)
         assert isinstance(result, Outcome)
+
+
+from mlb.data.models import BaseState
+from mlb.engine.simulate import advance_runners
+
+
+class TestAdvanceRunnersStrikeout:
+    """advance_runners: strikeout behavior."""
+
+    def test_k_no_runners(self):
+        """Strikeout with empty bases: no runs, outs +1."""
+        bases = BaseState()
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.K, 0, rng)
+        assert new_bases == BaseState()
+        assert runs == 0
+        assert outs == 1
+
+    def test_k_bases_loaded(self):
+        """Strikeout with bases loaded: runners hold, outs +1."""
+        bases = BaseState(first=True, second=True, third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.K, 1, rng)
+        assert new_bases == BaseState(first=True, second=True, third=True)
+        assert runs == 0
+        assert outs == 2
+
+
+class TestAdvanceRunnersWalkHBP:
+    """advance_runners: walk and HBP behavior (force advances only)."""
+
+    def test_walk_empty_bases(self):
+        """Walk with nobody on: batter to 1st."""
+        bases = BaseState()
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.BB, 0, rng)
+        assert new_bases == BaseState(first=True)
+        assert runs == 0
+        assert outs == 0
+
+    def test_walk_runner_on_first(self):
+        """Walk with runner on 1st: runners on 1st and 2nd."""
+        bases = BaseState(first=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.BB, 0, rng)
+        assert new_bases == BaseState(first=True, second=True)
+        assert runs == 0
+        assert outs == 0
+
+    def test_walk_runners_on_first_and_second(self):
+        """Walk with 1st and 2nd occupied: bases loaded."""
+        bases = BaseState(first=True, second=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.BB, 0, rng)
+        assert new_bases == BaseState(first=True, second=True, third=True)
+        assert runs == 0
+        assert outs == 0
+
+    def test_walk_bases_loaded(self):
+        """Walk with bases loaded: 1 run scores, bases stay loaded."""
+        bases = BaseState(first=True, second=True, third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.BB, 0, rng)
+        assert new_bases == BaseState(first=True, second=True, third=True)
+        assert runs == 1
+        assert outs == 0
+
+    def test_walk_runner_on_second_only(self):
+        """Walk with runner on 2nd only: batter to 1st, runner holds at 2nd (no force)."""
+        bases = BaseState(second=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.BB, 0, rng)
+        assert new_bases == BaseState(first=True, second=True)
+        assert runs == 0
+        assert outs == 0
+
+    def test_walk_runner_on_third_only(self):
+        """Walk with runner on 3rd only: batter to 1st, runner holds at 3rd (no force)."""
+        bases = BaseState(third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.BB, 0, rng)
+        assert new_bases == BaseState(first=True, third=True)
+        assert runs == 0
+        assert outs == 0
+
+    def test_walk_first_and_third(self):
+        """Walk with 1st and 3rd: runner on 1st forced to 2nd, 3rd holds."""
+        bases = BaseState(first=True, third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.BB, 0, rng)
+        assert new_bases == BaseState(first=True, second=True, third=True)
+        assert runs == 0
+        assert outs == 0
+
+    def test_hbp_same_as_walk(self):
+        """HBP forces same advancement as walk."""
+        bases = BaseState(first=True, second=True, third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.HBP, 0, rng)
+        assert new_bases == BaseState(first=True, second=True, third=True)
+        assert runs == 1
+        assert outs == 0
+
+
+class TestAdvanceRunnersOut:
+    """advance_runners: generic out behavior."""
+
+    def test_out_empty_bases(self):
+        """Out with nobody on: outs +1."""
+        bases = BaseState()
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.OUT, 0, rng)
+        assert new_bases == BaseState()
+        assert runs == 0
+        assert outs == 1
+
+    def test_out_runner_on_third_less_than_two_outs_sac_fly(self):
+        """Out with runner on 3rd, < 2 outs: sac fly ~50% of time over many trials."""
+        rng = np.random.default_rng(42)
+        scored_count = 0
+        n_trials = 2000
+        for _ in range(n_trials):
+            bases = BaseState(third=True)
+            _, runs, _ = advance_runners(bases, Outcome.OUT, 0, rng)
+            scored_count += runs
+        ratio = scored_count / n_trials
+        assert 0.40 < ratio < 0.60, f"Sac fly ratio {ratio} outside expected range"
+
+    def test_out_runner_on_third_two_outs_no_sac(self):
+        """Out with runner on 3rd, 2 outs: no sac fly, runner holds."""
+        bases = BaseState(third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.OUT, 2, rng)
+        assert new_bases == BaseState(third=True)
+        assert runs == 0
+        assert outs == 3
+
+    def test_out_runner_on_first_holds(self):
+        """Out with runner on 1st: runner holds (no GIDP in v1)."""
+        bases = BaseState(first=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.OUT, 0, rng)
+        assert new_bases == BaseState(first=True)
+        assert runs == 0
+        assert outs == 1
