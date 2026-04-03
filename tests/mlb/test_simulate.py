@@ -2,7 +2,8 @@
 import numpy as np
 import pytest
 
-from mlb.config import Outcome
+from mlb.config import Hand, Outcome
+from mlb.data.models import BatterStats
 from mlb.engine.simulate import resolve_pa_outcome
 
 
@@ -351,3 +352,110 @@ class TestAdvanceRunnersHR:
         assert new_bases == BaseState()
         assert runs == 2
         assert outs == 0
+
+
+from mlb.config import LEAGUE_AVERAGES
+from mlb.data.models import GameState, Lineup, PitcherStats
+from mlb.engine.simulate import should_pull_starter, get_current_pitcher
+
+
+def _make_pitcher(name: str, throws: str = 'R') -> PitcherStats:
+    """Helper to create a PitcherStats with neutral rates."""
+    rates = {o.value: 1.0 / len(Outcome) for o in Outcome}
+    return PitcherStats(
+        player_id=name, name=name, throws=Hand(throws),
+        pa_against=500, rates=rates,
+    )
+
+
+def _make_lineup(starter_name: str = 'Starter', bullpen_names: list | None = None) -> Lineup:
+    """Helper to create a Lineup with a starter and bullpen."""
+    if bullpen_names is None:
+        bullpen_names = ['Reliever1', 'Reliever2', 'Closer']
+    batter_rates = {o.value: 1.0 / len(Outcome) for o in Outcome}
+    batters = [
+        BatterStats(player_id=f'b{i}', name=f'Batter{i}', bats=Hand.RIGHT, pa=500, rates=batter_rates)
+        for i in range(9)
+    ]
+    return Lineup(
+        team_id='TST', team_name='Test Team',
+        batting_order=batters,
+        starting_pitcher=_make_pitcher(starter_name),
+        bullpen=[_make_pitcher(name) for name in bullpen_names],
+    )
+
+
+class TestShouldPullStarter:
+    """should_pull_starter: pitcher substitution logic."""
+
+    def test_under_limit_keep(self):
+        """99 pitches, 5 innings, 3 runs: keep starter."""
+        assert should_pull_starter(99, 5.0, 3) is False
+
+    def test_at_limit_pull(self):
+        """100 pitches: pull starter."""
+        assert should_pull_starter(100, 5.0, 3) is True
+
+    def test_over_limit_pull(self):
+        """120 pitches: pull starter."""
+        assert should_pull_starter(120, 5.0, 3) is True
+
+    def test_complete_game_pull(self):
+        """9.0 innings pitched: pull (complete game cap)."""
+        assert should_pull_starter(80, 9.0, 2) is True
+
+    def test_blowup_pull(self):
+        """8 runs allowed: pull regardless of pitch count."""
+        assert should_pull_starter(40, 3.0, 8) is True
+
+    def test_custom_config_pitch_limit(self):
+        """Custom pitch count limit via config."""
+        assert should_pull_starter(80, 5.0, 3, config={'pitch_count_limit': 80}) is True
+        assert should_pull_starter(79, 5.0, 3, config={'pitch_count_limit': 80}) is False
+
+    def test_custom_config_innings_limit(self):
+        """Custom innings limit via config."""
+        assert should_pull_starter(50, 7.0, 2, config={'innings_limit': 7.0}) is True
+
+    def test_custom_config_runs_limit(self):
+        """Custom runs allowed limit via config."""
+        assert should_pull_starter(50, 5.0, 5, config={'runs_limit': 5}) is True
+
+
+class TestGetCurrentPitcher:
+    """get_current_pitcher: pitcher selection and bullpen transitions."""
+
+    def test_returns_starter_initially(self):
+        """Before any substitution, returns the starting pitcher."""
+        lineup = _make_lineup()
+        state = GameState()
+        pitcher = get_current_pitcher(lineup, state, is_home=True)
+        assert pitcher.name == 'Starter'
+
+    def test_returns_bullpen_after_pull(self):
+        """After starter pulled (home_bullpen_index=0), returns first bullpen arm."""
+        lineup = _make_lineup()
+        state = GameState(home_bullpen_index=0, home_pitch_count=0)
+        pitcher = get_current_pitcher(lineup, state, is_home=True)
+        assert pitcher.name == 'Reliever1'
+
+    def test_returns_second_bullpen_arm(self):
+        """home_bullpen_index=1 returns second reliever."""
+        lineup = _make_lineup()
+        state = GameState(home_bullpen_index=1, home_pitch_count=0)
+        pitcher = get_current_pitcher(lineup, state, is_home=True)
+        assert pitcher.name == 'Reliever2'
+
+    def test_away_team_uses_away_fields(self):
+        """is_home=False reads from away_bullpen_index."""
+        lineup = _make_lineup()
+        state = GameState(away_bullpen_index=0)
+        pitcher = get_current_pitcher(lineup, state, is_home=False)
+        assert pitcher.name == 'Reliever1'
+
+    def test_exhausted_bullpen_uses_last_arm(self):
+        """If bullpen index exceeds length, use last available arm."""
+        lineup = _make_lineup(bullpen_names=['OnlyRelief'])
+        state = GameState(home_bullpen_index=5)
+        pitcher = get_current_pitcher(lineup, state, is_home=True)
+        assert pitcher.name == 'OnlyRelief'

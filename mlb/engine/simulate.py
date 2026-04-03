@@ -176,3 +176,55 @@ def _advance_hr(bases: BaseState) -> tuple[BaseState, int, int]:
     """Home run: batter scores. All runners score."""
     runs = 1 + sum([bases.first, bases.second, bases.third])
     return BaseState(), runs, 0
+
+
+def should_pull_starter(
+    pitch_count: int,
+    innings_pitched: float,
+    runs_allowed: int,
+    config: dict | None = None,
+) -> bool:
+    """Decide whether to replace the starting pitcher.
+
+    Checks pitch count, innings pitched, and runs allowed against
+    configurable thresholds.
+    """
+    cfg = config or {}
+    pitch_limit = cfg.get('pitch_count_limit', DEFAULT_PITCH_COUNT_LIMIT)
+    innings_limit = cfg.get('innings_limit', 9.0)
+    runs_limit = cfg.get('runs_limit', 8)
+
+    if pitch_count >= pitch_limit:
+        return True
+    if innings_pitched >= innings_limit:
+        return True
+    if runs_allowed >= runs_limit:
+        return True
+    return False
+
+
+def get_current_pitcher(
+    lineup: Lineup,
+    game_state: GameState,
+    is_home: bool,
+) -> PitcherStats:
+    """Return the pitcher currently on the mound for the given team.
+
+    Uses bullpen_index from GameState: -1 means starter is still in,
+    0+ indexes into lineup.bullpen. If bullpen is exhausted, reuses
+    the last available arm (emergency pitcher).
+
+    Note: bullpen arms are used in order — handedness-based bullpen
+    usage is a future enhancement.
+    """
+    bullpen_idx = game_state.home_bullpen_index if is_home else game_state.away_bullpen_index
+
+    if bullpen_idx < 0:
+        return lineup.starting_pitcher
+
+    if not lineup.bullpen:
+        return lineup.starting_pitcher
+
+    # Clamp to last available arm if bullpen exhausted
+    idx = min(bullpen_idx, len(lineup.bullpen) - 1)
+    return lineup.bullpen[idx]
