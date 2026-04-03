@@ -136,3 +136,28 @@ def normalize(rates: dict[str, float]) -> dict[str, float]:
         n = len(rates)
         return {k: 1.0 / n for k in rates}
     return {k: v / total for k, v in rates.items()}
+
+
+def build_pa_probability_table(
+    batter: BatterStats,
+    pitcher: PitcherStats,
+    park_factors: ParkFactors,
+    weather: Weather | None,
+    league_averages: dict[tuple[Hand, Hand], dict[str, float]],
+) -> dict[str, float]:
+    """Build the complete PA probability table — main entry point.
+
+    Full pipeline:
+    1. Resolve batter handedness (switch hitters bat opposite pitcher)
+    2. Look up correct league averages for this handedness matchup
+    3. Look up correct park factors for batter handedness
+    4. Odds Ratio → park factors → weather → normalize
+    """
+    effective_hand = resolve_batter_hand(batter.bats, pitcher.throws)
+    matchup_averages = league_averages[(effective_hand, pitcher.throws)]
+    pf = park_factors.get_factors(effective_hand)
+
+    raw_rates = compute_matchup_rates(batter, pitcher, matchup_averages)
+    park_adjusted = apply_park_factors(raw_rates, pf)
+    weather_adjusted = apply_weather_adjustments(park_adjusted, weather)
+    return normalize(weather_adjusted)

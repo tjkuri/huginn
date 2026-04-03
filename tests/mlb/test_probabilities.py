@@ -42,8 +42,8 @@ class TestOddsRatio:
 
 
 from mlb.config import Hand, Outcome, LEAGUE_AVERAGES
-from mlb.data.models import BatterStats, PitcherStats
-from mlb.engine.probabilities import compute_matchup_rates, apply_park_factors
+from mlb.data.models import BatterStats, PitcherStats, ParkFactors
+from mlb.engine.probabilities import compute_matchup_rates, apply_park_factors, build_pa_probability_table
 
 
 def _sample_batter():
@@ -243,3 +243,92 @@ class TestNormalize:
         rates = {'A': 0.0, 'B': 0.0, 'C': 0.0}
         result = normalize(rates)
         assert result == pytest.approx({'A': 1 / 3, 'B': 1 / 3, 'C': 1 / 3})
+
+
+def _neutral_park():
+    """Park with all factors at 1.0 — no adjustment."""
+    neutral = {o.value: 1.0 for o in Outcome}
+    return ParkFactors('v0', 'Neutral Park', neutral, neutral)
+
+
+class TestBuildPaProbabilityTable:
+    def test_full_pipeline_all_outcomes_present(self):
+        """Complete pipeline produces all 8 outcomes."""
+        park = ParkFactors(
+            'v1', 'Coors Field',
+            factors_vs_lhb={'HR': 1.15, '1B': 1.05, 'K': 1.0,
+                            'BB': 1.0, '2B': 1.10, '3B': 1.05},
+            factors_vs_rhb={'HR': 1.05, '1B': 1.02, 'K': 1.0,
+                            'BB': 1.0, '2B': 1.05, '3B': 1.02},
+        )
+        weather = Weather(85.0, 8.0, WindDirection.OUT_TO_CF, 55.0)
+        result = build_pa_probability_table(
+            _sample_batter(), _sample_pitcher(), park, weather, LEAGUE_AVERAGES,
+        )
+        assert set(result.keys()) == {o.value for o in Outcome}
+
+    def test_full_pipeline_all_positive(self):
+        """Every outcome has a positive probability."""
+        park = _neutral_park()
+        weather = Weather(75.0, 5.0, WindDirection.CALM, 50.0)
+        result = build_pa_probability_table(
+            _sample_batter(), _sample_pitcher(), park, weather, LEAGUE_AVERAGES,
+        )
+        for outcome, rate in result.items():
+            assert rate > 0, f"{outcome} should be positive"
+
+    def test_full_pipeline_sums_to_one(self):
+        """Output sums to exactly 1.0."""
+        park = ParkFactors(
+            'v1', 'Coors Field',
+            factors_vs_lhb={'HR': 1.15, '1B': 1.05, 'K': 1.0,
+                            'BB': 1.0, '2B': 1.10, '3B': 1.05},
+            factors_vs_rhb={'HR': 1.05, '1B': 1.02, 'K': 1.0,
+                            'BB': 1.0, '2B': 1.05, '3B': 1.02},
+        )
+        weather = Weather(85.0, 8.0, WindDirection.OUT_TO_CF, 55.0)
+        result = build_pa_probability_table(
+            _sample_batter(), _sample_pitcher(), park, weather, LEAGUE_AVERAGES,
+        )
+        assert sum(result.values()) == pytest.approx(1.0)
+
+    def test_league_average_symmetry(self):
+        """Both batter and pitcher at league avg, neutral park, no weather
+        → output should equal league averages exactly."""
+        league = LEAGUE_AVERAGES[(Hand.LEFT, Hand.RIGHT)]
+        batter = BatterStats('b1', 'Avg', Hand.LEFT, 500, dict(league))
+        pitcher = PitcherStats('p1', 'Avg', Hand.RIGHT, 600, dict(league))
+        park = _neutral_park()
+
+        result = build_pa_probability_table(
+            batter, pitcher, park, None, LEAGUE_AVERAGES,
+        )
+        for outcome in Outcome:
+            assert result[outcome.value] == pytest.approx(
+                league[outcome.value], abs=0.001
+            ), f"{outcome.value} should match league average"
+
+    def test_switch_hitter_resolves_correctly(self):
+        """Switch hitter vs RHP → uses (L, R) league averages and LHB park factors."""
+        league_lr = LEAGUE_AVERAGES[(Hand.LEFT, Hand.RIGHT)]
+        batter = BatterStats('b1', 'Switch', Hand.SWITCH, 500, dict(league_lr))
+        pitcher = PitcherStats('p1', 'Righty', Hand.RIGHT, 600, dict(league_lr))
+        park_lhb = {o.value: 1.0 for o in Outcome}
+        park_lhb['HR'] = 1.20
+        park_rhb = {o.value: 1.0 for o in Outcome}
+        park_rhb['HR'] = 1.00
+        park = ParkFactors('v1', 'Yankee Stadium', park_lhb, park_rhb)
+
+        result = build_pa_probability_table(
+            batter, pitcher, park, None, LEAGUE_AVERAGES,
+        )
+        # Switch hitter vs RHP bats left → should use LHB park factors
+        assert result['HR'] > league_lr['HR']
+
+    def test_no_weather(self):
+        """Pipeline works with weather=None."""
+        result = build_pa_probability_table(
+            _sample_batter(), _sample_pitcher(), _neutral_park(),
+            None, LEAGUE_AVERAGES,
+        )
+        assert sum(result.values()) == pytest.approx(1.0)
