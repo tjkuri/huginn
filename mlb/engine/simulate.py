@@ -112,17 +112,67 @@ def _advance_out(
     return BaseState(first=bases.first, second=bases.second, third=third), runs, new_outs
 
 
-def _advance_single(bases: BaseState, rng: np.random.Generator) -> tuple[BaseState, int, int]:
-    raise NotImplementedError
+def _advance_single(
+    bases: BaseState, rng: np.random.Generator,
+) -> tuple[BaseState, int, int]:
+    """Single: batter to 1st. Runners advance with probabilistic outcomes."""
+    runs = 0
+
+    # Runner on 3rd scores
+    if bases.third:
+        runs += 1
+
+    # Runner on 2nd: scores (90%) or holds at 3rd (10%)
+    third = False
+    if bases.second:
+        if rng.random() < 0.9:
+            runs += 1
+        else:
+            third = True
+
+    # Runner on 1st: to 2nd (70%) or to 3rd (30%)
+    second = False
+    if bases.first:
+        if rng.random() < 0.7:
+            second = True
+        else:
+            third = True
+
+    return BaseState(first=True, second=second, third=third), runs, 0
 
 
-def _advance_double(bases: BaseState, rng: np.random.Generator) -> tuple[BaseState, int, int]:
-    raise NotImplementedError
+def _advance_double(
+    bases: BaseState, rng: np.random.Generator,
+) -> tuple[BaseState, int, int]:
+    """Double: batter to 2nd. Runner on 2nd/3rd score. Runner on 1st to 3rd or scores."""
+    runs = 0
+
+    # Runner on 3rd scores
+    if bases.third:
+        runs += 1
+
+    # Runner on 2nd scores
+    if bases.second:
+        runs += 1
+
+    # Runner on 1st: to 3rd (60%) or scores (40%)
+    third = False
+    if bases.first:
+        if rng.random() < 0.6:
+            third = True
+        else:
+            runs += 1
+
+    return BaseState(first=False, second=True, third=third), runs, 0
 
 
 def _advance_triple(bases: BaseState) -> tuple[BaseState, int, int]:
-    raise NotImplementedError
+    """Triple: batter to 3rd. All runners score."""
+    runs = sum([bases.first, bases.second, bases.third])
+    return BaseState(third=True), runs, 0
 
 
 def _advance_hr(bases: BaseState) -> tuple[BaseState, int, int]:
-    raise NotImplementedError
+    """Home run: batter scores. All runners score."""
+    runs = 1 + sum([bases.first, bases.second, bases.third])
+    return BaseState(), runs, 0

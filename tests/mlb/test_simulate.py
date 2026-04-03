@@ -187,3 +187,167 @@ class TestAdvanceRunnersOut:
         assert new_bases == BaseState(first=True)
         assert runs == 0
         assert outs == 1
+
+
+class TestAdvanceRunnersSingle:
+    """advance_runners: single behavior."""
+
+    def test_single_empty_bases(self):
+        """Single with nobody on: batter to 1st."""
+        bases = BaseState()
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.SINGLE, 0, rng)
+        assert new_bases.first is True
+        assert runs == 0
+        assert outs == 0
+
+    def test_single_runner_on_second_scores_or_third(self):
+        """Single with runner on 2nd: scores (90%) or holds 3rd (10%)."""
+        rng = np.random.default_rng(42)
+        scored = 0
+        n_trials = 2000
+        for _ in range(n_trials):
+            bases = BaseState(second=True)
+            new_bases, runs, outs = advance_runners(bases, Outcome.SINGLE, 0, rng)
+            assert new_bases.first is True
+            assert outs == 0
+            scored += runs
+        ratio = scored / n_trials
+        assert 0.85 < ratio < 0.95, f"Runner from 2nd scoring ratio {ratio}"
+
+    def test_single_runner_on_third_scores(self):
+        """Single with runner on 3rd: always scores."""
+        bases = BaseState(third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.SINGLE, 0, rng)
+        assert runs == 1
+        assert new_bases.third is False
+        assert outs == 0
+
+    def test_single_runner_on_first_advances(self):
+        """Single with runner on 1st: advances to 2nd (70%) or 3rd (30%)."""
+        rng = np.random.default_rng(42)
+        to_third_count = 0
+        n_trials = 2000
+        for _ in range(n_trials):
+            bases = BaseState(first=True)
+            new_bases, runs, outs = advance_runners(bases, Outcome.SINGLE, 0, rng)
+            assert new_bases.first is True  # batter on 1st
+            if new_bases.third:
+                to_third_count += 1
+        ratio = to_third_count / n_trials
+        assert 0.25 < ratio < 0.35, f"Runner 1st-to-3rd ratio {ratio}"
+
+    def test_single_bases_loaded(self):
+        """Single with bases loaded: runner on 3rd scores, batter at 1st."""
+        bases = BaseState(first=True, second=True, third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.SINGLE, 0, rng)
+        assert runs >= 1  # at least runner on 3rd scores
+        assert new_bases.first is True
+        assert outs == 0
+
+
+class TestAdvanceRunnersDouble:
+    """advance_runners: double behavior."""
+
+    def test_double_empty_bases(self):
+        """Double with nobody on: batter to 2nd."""
+        bases = BaseState()
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.DOUBLE, 0, rng)
+        assert new_bases == BaseState(second=True)
+        assert runs == 0
+        assert outs == 0
+
+    def test_double_runner_on_second_scores(self):
+        """Double with runner on 2nd: runner scores."""
+        bases = BaseState(second=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.DOUBLE, 0, rng)
+        assert new_bases.second is True  # batter at 2nd
+        assert runs == 1
+        assert outs == 0
+
+    def test_double_runner_on_third_scores(self):
+        """Double with runner on 3rd: runner scores."""
+        bases = BaseState(third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.DOUBLE, 0, rng)
+        assert runs == 1
+        assert outs == 0
+
+    def test_double_runner_on_first_to_third_or_scores(self):
+        """Double with runner on 1st: to 3rd (60%) or scores (40%)."""
+        rng = np.random.default_rng(42)
+        scored = 0
+        n_trials = 2000
+        for _ in range(n_trials):
+            bases = BaseState(first=True)
+            new_bases, runs, outs = advance_runners(bases, Outcome.DOUBLE, 0, rng)
+            assert new_bases.second is True  # batter at 2nd
+            scored += runs
+        ratio = scored / n_trials
+        assert 0.35 < ratio < 0.45, f"Runner 1st scoring on double ratio {ratio}"
+
+    def test_double_bases_loaded(self):
+        """Double with bases loaded: runners on 2nd and 3rd score, runner on 1st to 3rd or scores."""
+        bases = BaseState(first=True, second=True, third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.DOUBLE, 0, rng)
+        assert runs >= 2  # at least 2nd and 3rd score
+        assert new_bases.second is True  # batter
+        assert outs == 0
+
+
+class TestAdvanceRunnersTriple:
+    """advance_runners: triple behavior."""
+
+    def test_triple_empty_bases(self):
+        """Triple with nobody on: batter to 3rd."""
+        bases = BaseState()
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.TRIPLE, 0, rng)
+        assert new_bases == BaseState(third=True)
+        assert runs == 0
+        assert outs == 0
+
+    def test_triple_bases_loaded(self):
+        """Triple with bases loaded: 3 runs score, batter on 3rd."""
+        bases = BaseState(first=True, second=True, third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.TRIPLE, 0, rng)
+        assert new_bases == BaseState(third=True)
+        assert runs == 3
+        assert outs == 0
+
+
+class TestAdvanceRunnersHR:
+    """advance_runners: home run behavior."""
+
+    def test_hr_empty_bases(self):
+        """Solo HR: 1 run, bases empty."""
+        bases = BaseState()
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.HR, 0, rng)
+        assert new_bases == BaseState()
+        assert runs == 1
+        assert outs == 0
+
+    def test_hr_bases_loaded(self):
+        """Grand slam: 4 runs, bases empty."""
+        bases = BaseState(first=True, second=True, third=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.HR, 0, rng)
+        assert new_bases == BaseState()
+        assert runs == 4
+        assert outs == 0
+
+    def test_hr_runner_on_second(self):
+        """HR with runner on 2nd: 2 runs, bases empty."""
+        bases = BaseState(second=True)
+        rng = np.random.default_rng(42)
+        new_bases, runs, outs = advance_runners(bases, Outcome.HR, 0, rng)
+        assert new_bases == BaseState()
+        assert runs == 2
+        assert outs == 0
