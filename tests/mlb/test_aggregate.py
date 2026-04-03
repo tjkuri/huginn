@@ -6,7 +6,7 @@ from mlb.config import Hand, Outcome, LEAGUE_AVERAGES
 from mlb.data.models import (
     BatterStats, PitcherStats, Lineup, ParkFactors, GameContext, SimulatedGame,
 )
-from mlb.engine.aggregate import run_simulations
+from mlb.engine.aggregate import run_simulations, compute_run_distributions
 
 
 # ── Shared fixtures ──────────────────────────────────────────────────────────
@@ -92,3 +92,46 @@ class TestRunSimulations:
         scores_a = [(g.away_runs, g.home_runs) for g in games_a]
         scores_b = [(g.away_runs, g.home_runs) for g in games_b]
         assert scores_a != scores_b
+
+
+class TestComputeRunDistributions:
+
+    def _make_games(self, n: int = 300) -> list[SimulatedGame]:
+        ctx = _make_game_context()
+        return run_simulations(ctx, LEAGUE_AVERAGES, n_simulations=n, base_seed=42)
+
+    def test_mean_total_runs_in_range(self):
+        """Mean total runs is positive and finite."""
+        games = self._make_games()
+        dist = compute_run_distributions(games)
+        mean = dist['total_runs']['mean']
+        assert mean > 0 and mean < float('inf')
+
+    def test_std_is_positive(self):
+        """Standard deviation of total runs is positive."""
+        games = self._make_games()
+        dist = compute_run_distributions(games)
+        assert dist['total_runs']['std'] > 0
+
+    def test_min_le_mean_le_max(self):
+        """min <= mean <= max for all three run distributions."""
+        games = self._make_games()
+        dist = compute_run_distributions(games)
+        for key in ('away_runs', 'home_runs', 'total_runs'):
+            d = dist[key]
+            assert d['min'] <= d['mean'] <= d['max'], f"failed for {key}"
+
+    def test_distribution_pairs_cover_all_values(self):
+        """Distribution list covers the full range of observed values."""
+        games = self._make_games(100)
+        dist = compute_run_distributions(games)
+        values = [v for v, _c in dist['total_runs']['distribution']]
+        all_totals = [g.away_runs + g.home_runs for g in games]
+        assert set(values) == set(all_totals)
+
+    def test_run_diff_keys_present(self):
+        """run_diff contains mean and std."""
+        games = self._make_games(100)
+        dist = compute_run_distributions(games)
+        assert 'mean' in dist['run_diff']
+        assert 'std' in dist['run_diff']
