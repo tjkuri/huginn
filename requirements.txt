@@ -4,3 +4,5 @@ pandas
 rich
 pytest
 optuna
+pybaseball
+MLB-StatsAPI

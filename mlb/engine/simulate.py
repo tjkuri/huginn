@@ -54,22 +54,27 @@ def advance_runners(
         return bases, 0, outs + 1
 
     if outcome in (Outcome.BB, Outcome.HBP):
-        return _advance_walk(bases)
+        new_bases, runs, outs_added = _advance_walk(bases)
+        return new_bases, runs, outs + outs_added
 
     if outcome == Outcome.OUT:
         return _advance_out(bases, outs, rng)
 
     if outcome == Outcome.SINGLE:
-        return _advance_single(bases, rng)
+        new_bases, runs, outs_added = _advance_single(bases, rng)
+        return new_bases, runs, outs + outs_added
 
     if outcome == Outcome.DOUBLE:
-        return _advance_double(bases, rng)
+        new_bases, runs, outs_added = _advance_double(bases, rng)
+        return new_bases, runs, outs + outs_added
 
     if outcome == Outcome.TRIPLE:
-        return _advance_triple(bases)
+        new_bases, runs, outs_added = _advance_triple(bases)
+        return new_bases, runs, outs + outs_added
 
     if outcome == Outcome.HR:
-        return _advance_hr(bases)
+        new_bases, runs, outs_added = _advance_hr(bases)
+        return new_bases, runs, outs + outs_added
 
     # Should not reach here with valid Outcome enum
     return bases, 0, outs + 1

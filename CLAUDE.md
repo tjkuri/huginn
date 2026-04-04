@@ -20,10 +20,17 @@ mlb/                             MLB Monte Carlo simulation engine
   config.py                      Enums, league averages, season config, simulation defaults
   data/models.py                 Typed dataclasses for all MLB data structures
   data/cache.py                  File-based JSON caching with TTL
+  data/stats.py                  pybaseball fetchers + BatterStats/PitcherStats builders
+  data/lineups.py                MLB Stats API schedule, lineup, and roster fetchers
+  data/park_factors.py           Hardcoded park-factor table + team→venue lookup
+  data/weather.py                Neutral weather stub + indoor-park detection
+  data/builder.py                Assembles GameContext from fetched data + fallbacks
   engine/probabilities.py        Odds ratio, park/weather adjustments, PA probability tables
   engine/simulate.py             Game simulation: outcome sampling, baserunners, 9-inning loop
-  scripts/                       (CLI entry points — future)
-tests/mlb/                       pytest tests for MLB scaffolding
+  scripts/simulate_game.py       CLI entry point for schedule→data→simulation→JSON/report flow
+  scripts/test_smoke.py          Synthetic end-to-end smoke test (no APIs)
+  scripts/diagnose_calibration.py League-average diagnostic for PA/run calibration
+tests/mlb/                       pytest test suite (181 tests)
 ```
 
 ## Commands
@@ -44,6 +51,15 @@ python nba/scripts/run_optimizer.py --target avg_miss --export
 
 # Run MLB tests
 python -m pytest tests/mlb/ -v
+
+# Install MLB data dependencies
+pip install pybaseball MLB-StatsAPI
+
+# Run MLB CLI smoke test
+python -m mlb.scripts.test_smoke
+
+# Run league-average calibration diagnostic
+python -m mlb.scripts.diagnose_calibration
 
 # Run MLB simulation tests
 python -m pytest tests/mlb/test_simulate.py -v
@@ -90,13 +106,31 @@ Key files in the sibling repo for understanding the data:
 - **Switch hitters resolve opposite pitcher.** `resolve_batter_hand(S, R) → L`, `resolve_batter_hand(S, L) → R`.
 - **Park factors split by batter hand.** `ParkFactors.get_factors(hand)` returns the correct multiplier dict.
 - **BaseState is frozen.** Each PA produces a new BaseState; never mutate in place.
-- **Stdlib only.** MLB code uses only Python standard library (no new dependencies).
+- **MLB runtime depends on numpy plus data packages.** The engine still avoids web/service dependencies, but the CLI/data layer uses `pybaseball` and `MLB-StatsAPI`.
 - **numpy RNG threading.** All randomness flows through `np.random.Generator` parameters — no global state. Enables reproducible simulations via seed.
 - **Approximate pitch counting.** 4 pitches per PA as a rough average for pitch count tracking.
 - **Extra-inning ghost runner.** 10th+ inning half-innings start with `BaseState(second=True)` per MLB rules (2020+).
 - **Mercy rule at 15 innings.** Games capped to prevent infinite loops in edge cases.
 - **Bullpen in order.** Relievers used sequentially from `lineup.bullpen`. Handedness-based selection is a future enhancement.
 - **No GIDP in v1.** Ground-ball double plays not modeled; runners hold on generic outs (except sac fly).
+- **MLB data layer uses external sources.** `pybaseball` provides season stats; `MLB-StatsAPI` provides schedules, lineups, and rosters.
+- **Lazy imports protect tests.** Data fetch modules import external packages only when fetch functions are called, so mocked tests run without live network usage.
+- **Overall stats stand in for true splits in v1.** `mlb/data/stats.py` uses season-level overall rates for all handedness matchups. Proper split scraping is a future enhancement.
+- **Name matching is v1 identity resolution.** pybaseball and MLB Stats API players are matched by normalized player name for now; no persistent ID map yet.
+- **Early season uses prior-year coverage.** In April, 2026 batting/pitching thresholds drop to 20 PA / 10 IP. Players still below those thresholds fall back to 2025 season stats before league-average fallback.
+- **Player source tags are explicit.** Data-layer player payloads now carry `source` values of `2026`, `2025`, or `league_avg`, and the CLI reports batter source counts in data notes.
+- **Missing real-player data falls back to league average.** Unknown batters/pitchers log warnings and use league-average rates so game-context assembly does not fail.
+- **Park factors are coarse annual inputs.** `mlb/data/park_factors.py` uses hardcoded approximate 2025 factors that should be refreshed annually.
+- **CLI has two output modes.** `mlb/scripts/simulate_game.py` prints human-readable summaries by default and emits clean JSON arrays on stdout with `--json`.
+- **JSON mode must keep stdout clean.** Logging/progress go to stderr or are suppressed so Yggdrasil can consume stdout directly.
+- **Verbose simulation uses chunked execution.** The CLI batches simulations in 1000-sim chunks when `--verbose` is enabled so progress can be reported without changing engine internals.
+- **Synthetic smoke coverage is the fast end-to-end check.** `python -m mlb.scripts.test_smoke` validates the full pipeline without network access.
+- **Calibration bug fixed in inning state.** Non-out events must preserve the current out count; resetting outs to zero made half-innings continue until three consecutive outs and inflated scoring to ~26 runs/game.
+- **League-average neutral check is now the calibration baseline.** `python -m mlb.scripts.diagnose_calibration` should land around 8.5-9.5 total runs/game, ~70-80 PAs, and ~54 outs.
+- **Stat caches must be non-empty to be trusted.** Empty merged or seasonal player caches are discarded and rebuilt instead of freezing the system at all-fallback output.
+- **pybaseball K%/BB% are already decimals.** `batting_stats()` and `pitching_stats()` return `K%` and `BB%` as decimals (e.g. 0.182), not percentages (18.2). Do not divide by 100.
+- **pybaseball batter handedness column is `Bat` (singular).** The column is `Bat`, not `Bats`. `stats.py` tries `Bat` then `Bats` as fallback.
+- **Stats load errors propagate.** `load_schedule_and_stats` in the CLI does not swallow fetch exceptions — if pybaseball or MLB-StatsAPI fails, the error surfaces rather than silently producing all-league-average output.
 
 ## Future Work
 

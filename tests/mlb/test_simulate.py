@@ -83,6 +83,13 @@ class TestAdvanceRunnersWalkHBP:
         assert runs == 0
         assert outs == 0
 
+    def test_walk_preserves_existing_outs(self):
+        """Walk should not reset the inning out count."""
+        bases = BaseState(first=True)
+        rng = np.random.default_rng(42)
+        _, _, outs = advance_runners(bases, Outcome.BB, 2, rng)
+        assert outs == 2
+
     def test_walk_runner_on_first(self):
         """Walk with runner on 1st: runners on 1st and 2nd."""
         bases = BaseState(first=True)
@@ -202,6 +209,13 @@ class TestAdvanceRunnersSingle:
         assert runs == 0
         assert outs == 0
 
+    def test_single_preserves_existing_outs(self):
+        """Single should not reset the inning out count."""
+        bases = BaseState()
+        rng = np.random.default_rng(42)
+        _, _, outs = advance_runners(bases, Outcome.SINGLE, 2, rng)
+        assert outs == 2
+
     def test_single_runner_on_second_scores_or_third(self):
         """Single with runner on 2nd: scores (90%) or holds 3rd (10%)."""
         rng = np.random.default_rng(42)
@@ -260,6 +274,13 @@ class TestAdvanceRunnersDouble:
         assert new_bases == BaseState(second=True)
         assert runs == 0
         assert outs == 0
+
+    def test_double_preserves_existing_outs(self):
+        """Double should not reset the inning out count."""
+        bases = BaseState(first=True)
+        rng = np.random.default_rng(42)
+        _, _, outs = advance_runners(bases, Outcome.DOUBLE, 2, rng)
+        assert outs == 2
 
     def test_double_runner_on_second_scores(self):
         """Double with runner on 2nd: runner scores."""
