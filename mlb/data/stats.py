@@ -419,6 +419,7 @@ def build_batter_stats(player_data: dict, hand: str) -> BatterStats:
         bats=bats,
         pa=_safe_int(player_data.get("pa"), 0),
         rates=rates,
+        data_source=str(player_data.get("source") or "unknown"),
     )
 
 
@@ -442,4 +443,5 @@ def build_pitcher_stats(player_data: dict) -> PitcherStats:
         pa_against=pa_against,
         rates=rates,
         avg_pitch_count=avg_pitch_count,
+        data_source=str(player_data.get("source") or "unknown"),
     )

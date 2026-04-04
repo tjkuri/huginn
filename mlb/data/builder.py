@@ -61,7 +61,6 @@ def _build_batting_order(players: list[dict], batting_data: dict[str, dict]) -> 
         batter = build_batter_stats(stats, player.get("bats", stats.get("bats", "R")))
         batter.player_id = str(player.get("id") or batter.player_id)
         batter.name = str(player.get("name") or batter.name)
-        batter.data_source = str(stats.get("source") or "unknown")
         batting_order.append(batter)
 
     if len(batting_order) != 9:
@@ -73,7 +72,6 @@ def _build_pitcher(player: dict | None, pitching_data: dict[str, dict]):
     if not player:
         logger.warning("Missing starting pitcher info; using league-average fallback")
         pitcher = build_pitcher_stats(_league_average_pitcher("League Average Pitcher", "R"))
-        pitcher.data_source = "league_avg"
         return pitcher
 
     name = player.get("name", "")
@@ -87,7 +85,6 @@ def _build_pitcher(player: dict | None, pitching_data: dict[str, dict]):
     pitcher = build_pitcher_stats(stats)
     pitcher.player_id = str(player.get("id") or pitcher.player_id)
     pitcher.name = str(player.get("name") or pitcher.name)
-    pitcher.data_source = str(stats.get("source") or "unknown")
     return pitcher
 
 

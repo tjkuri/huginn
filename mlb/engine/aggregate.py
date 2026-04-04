@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -26,6 +27,14 @@ _TOTAL_BASES = {
     Outcome.TRIPLE: 3,
     Outcome.HR: 4,
 }
+
+
+@dataclass
+class PitcherSimStats(PlayerSimStats):
+    """Extended aggregate fields for pitcher prop markets."""
+    innings_pitched_per_game: float = 0.0
+    k_5_plus_pct: float = 0.0
+    quality_start_pct: float = 0.0
 
 
 def run_simulations(
@@ -108,13 +117,19 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
     """
     # per_game[player_id] -> list of per-game stat dicts, one entry per simulation
     per_game: dict[str, list[dict]] = defaultdict(list)
+    pitcher_per_game: dict[str, list[dict]] = defaultdict(list)
 
-    for game in games:
+    for sim_index, game in enumerate(games):
         # Tally stats for each player within this one simulation
         game_stats: dict[str, dict] = defaultdict(
             lambda: {
                 'pa': 0, 'hits': 0, '2b': 0, 'hr': 0,
                 'bb': 0, 'hbp': 0, 'k': 0, 'tb': 0, 'rbi': 0,
+            }
+        )
+        pitcher_game_stats: dict[str, dict] = defaultdict(
+            lambda: {
+                'outs': 0, 'k': 0, 'er': 0,
             }
         )
         for pa in game.pa_results:
@@ -136,8 +151,31 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
                 s['k'] += 1
             s['rbi'] += pa.runs_scored
 
+            pitcher_id = pa.pitcher_id
+            pitcher_stats = pitcher_game_stats[pitcher_id]
+            if pa.outcome in {Outcome.K, Outcome.OUT}:
+                pitcher_stats['outs'] += 1
+            if pa.outcome == Outcome.K:
+                pitcher_stats['k'] += 1
+            pitcher_stats['er'] += pa.runs_scored
+
         for pid, s in game_stats.items():
             per_game[pid].append(s)
+        for pid in list(per_game.keys()):
+            if len(per_game[pid]) < sim_index + 1:
+                per_game[pid].append(
+                    {'pa': 0, 'hits': 0, '2b': 0, 'hr': 0, 'bb': 0, 'hbp': 0, 'k': 0, 'tb': 0, 'rbi': 0}
+                )
+
+        for pid, s in pitcher_game_stats.items():
+            if len(pitcher_per_game[pid]) < sim_index:
+                pitcher_per_game[pid].extend(
+                    [{'outs': 0, 'k': 0, 'er': 0}] * (sim_index - len(pitcher_per_game[pid]))
+                )
+            pitcher_per_game[pid].append(s)
+        for pid in list(pitcher_per_game.keys()):
+            if len(pitcher_per_game[pid]) < sim_index + 1:
+                pitcher_per_game[pid].append({'outs': 0, 'k': 0, 'er': 0})
 
     result: dict[str, PlayerSimStats] = {}
     for pid, game_stats_list in per_game.items():
@@ -168,6 +206,27 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
             bb_per_game_std=float(np.std(bb)),
             k_per_game_std=float(np.std(k)),
             total_bases_per_game_std=float(np.std(tb)),
+        )
+
+    for pid, game_stats_list in pitcher_per_game.items():
+        outs = np.array([s['outs'] for s in game_stats_list], dtype=float)
+        strikeouts = np.array([s['k'] for s in game_stats_list], dtype=float)
+        earned_runs = np.array([s['er'] for s in game_stats_list], dtype=float)
+        innings_pitched = outs / 3.0
+
+        result[pid] = PitcherSimStats(
+            player_id=pid,
+            name=pid,
+            pa_per_game=0.0,
+            hits_per_game=0.0,
+            hr_per_game=0.0,
+            bb_per_game=0.0,
+            k_per_game=float(np.mean(strikeouts)),
+            runs_per_game=float(np.mean(earned_runs)),
+            innings_pitched_per_game=float(np.mean(innings_pitched)),
+            k_per_game_std=float(np.std(strikeouts)),
+            k_5_plus_pct=float(np.mean(strikeouts >= 5.0)),
+            quality_start_pct=float(np.mean((innings_pitched >= 6.0) & (earned_runs <= 3.0))),
         )
 
     return result

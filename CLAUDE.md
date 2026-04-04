@@ -135,6 +135,8 @@ Key files in the sibling repo for understanding the data:
 - **pybaseball K%/BB% are already decimals.** `batting_stats()` and `pitching_stats()` return `K%` and `BB%` as decimals (e.g. 0.182), not percentages (18.2). Do not divide by 100.
 - **pybaseball batter handedness column is `Bat` (singular).** The column is `Bat`, not `Bats`. `stats.py` tries `Bat` then `Bats` as fallback.
 - **Stats load errors propagate.** `load_schedule_and_stats` in the CLI does not swallow fetch exceptions — if pybaseball or MLB-StatsAPI fails, the error surfaces rather than silently producing all-league-average output.
+- **PitcherSimStats extends PlayerSimStats for prop markets.** `aggregate.py` tracks pitcher outs/K/ER per simulation and computes IP, 5+K%, and QS% alongside the base fields. The formatter uses these directly; do not recompute from raw `pa_results`.
+- **Pitcher display uses prop-market columns.** The player projections panel shows IP, K, 5+K%, ER, QS% — not rate stats like K/9 or ERA. This matches how sportsbooks present pitcher props.
 
 ## Future Work
 

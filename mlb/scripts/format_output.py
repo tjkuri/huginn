@@ -1,7 +1,8 @@
 """Terminal formatting helpers for MLB simulation CLI output."""
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+import re
+from collections import Counter
 from typing import Any
 
 from mlb.config import WindDirection
@@ -70,26 +71,32 @@ def _american(probability: float) -> str:
     return f"{value:+.0f}"
 
 
-def _count_batter_sources(game_context: GameContext) -> dict[str, int]:
-    counts = {"2026": 0, "2025": 0, "league_avg": 0, "other": 0}
-    for batter in game_context.away_lineup.batting_order + game_context.home_lineup.batting_order:
-        source = getattr(batter, "data_source", "other")
-        counts[source if source in counts else "other"] += 1
-    return counts
-
-
-def _group_missing_players(data_warnings: list[str]) -> dict[str, list[str]]:
-    grouped: dict[str, list[str]] = defaultdict(list)
-    for warning in data_warnings:
-        if not warning.startswith("Missing "):
-            continue
-        if "Missing batting data for " in warning:
-            name = warning.split("Missing batting data for ", 1)[1].split(";", 1)[0]
-            grouped["batting"].append(name)
-        elif "Missing pitching data for " in warning:
-            name = warning.split("Missing pitching data for ", 1)[1].split(";", 1)[0]
-            grouped["pitching"].append(name)
+def _players_by_source(players: list[Any]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for player in players:
+        source = str(getattr(player, "data_source", "unknown") or "unknown")
+        grouped.setdefault(source, []).append(str(getattr(player, "name", "Unknown")))
     return grouped
+
+
+def _wrap_names(names: list[str], indent: str = "    ", width: int | None = None) -> list[str]:
+    if not names:
+        return []
+    if width is None:
+        width = _CONTENT_WIDTH
+
+    lines: list[str] = []
+    current = indent
+    for name in names:
+        separator = "" if current == indent else ", "
+        candidate = f"{current}{separator}{name}"
+        if len(candidate) <= width:
+            current = candidate
+            continue
+        lines.append(current)
+        current = f"{indent}{name}"
+    lines.append(current)
+    return lines
 
 
 def _is_default_weather(game_context: GameContext) -> bool:
@@ -186,10 +193,10 @@ def _batter_rate_rows(
                     "name": batter.name,
                     "avg": ".000",
                     "obp": ".000",
-                    "slg": ".000",
+                    "tb": "0.0",
                     "k_pct": "0.0%",
-                    "hr_pct": "0.0%",
                     "two_plus_hits": "0.0%",
+                    "hr_pct": "0.0%",
                 }
             )
             continue
@@ -199,71 +206,49 @@ def _batter_rate_rows(
         ab = max(0.001, pa - stats.bb_per_game - hbp)
         avg = stats.hits_per_game / ab
         obp = (stats.hits_per_game + stats.bb_per_game + hbp) / pa
-        slg = stats.total_bases_per_game / ab
         rows.append(
             {
                 "name": batter.name,
                 "avg": f"{avg:.3f}".lstrip("0"),
                 "obp": f"{obp:.3f}".lstrip("0"),
-                "slg": f"{slg:.3f}".lstrip("0"),
+                "tb": f"{stats.total_bases_per_game:.1f}",
                 "k_pct": f"{(stats.k_per_game / pa) * 100:.1f}%",
-                "hr_pct": f"{(stats.hr_per_game / pa) * 100:.1f}%",
                 "two_plus_hits": f"{two_plus_hits.get(batter.player_id, 0.0) * 100:.1f}%",
+                "hr_pct": f"{(stats.hr_per_game / pa) * 100:.1f}%",
             }
         )
     return rows
 
 
-def _starter_rows(game_context: GameContext, simulated_games: list[SimulatedGame]) -> list[dict[str, str]]:
+def _starter_rows(game_context: GameContext, result: SimulationResult) -> list[dict[str, str]]:
     starters = [
-        (game_context.away_lineup.starting_pitcher, _abbrev(game_context.away_lineup.team_name)),
-        (game_context.home_lineup.starting_pitcher, _abbrev(game_context.home_lineup.team_name)),
+        game_context.away_lineup.starting_pitcher,
+        game_context.home_lineup.starting_pitcher,
     ]
     rows = []
-    for starter, team in starters:
-        if not simulated_games:
+    for starter in starters:
+        stats = result.player_stats.get(starter.player_id)
+        if stats is None:
             rows.append(
                 {
                     "name": starter.name,
-                    "team": team,
                     "ip": "--",
-                    "k9": f"{starter.rates.get('K', 0.0) * 100:.1f}%",
-                    "h9": f"{(starter.rates.get('1B', 0.0) + starter.rates.get('2B', 0.0) + starter.rates.get('3B', 0.0) + starter.rates.get('HR', 0.0)) * 100:.1f}%",
-                    "era": "input",
-                    "note": "TODO simulated starter line requires full simulated_games input",
+                    "k": "--",
+                    "five_plus_k": "--",
+                    "er": "--",
+                    "qs_pct": "--",
                 }
             )
             continue
 
-        outs = strikeouts = hits_allowed = runs_allowed = 0
-        for game in simulated_games:
-            for pa in game.pa_results:
-                if pa.pitcher_id != starter.player_id:
-                    continue
-                if pa.outcome.value in {"K", "OUT"}:
-                    outs += 1
-                if pa.outcome.value == "K":
-                    strikeouts += 1
-                if pa.outcome.value in {"1B", "2B", "3B", "HR"}:
-                    hits_allowed += 1
-                runs_allowed += pa.runs_scored
-        games_n = len(simulated_games)
-        ip = (outs / 3.0) / games_n if games_n else 0.0
-        if ip > 0:
-            k9 = ((strikeouts / games_n) / ip) * 9.0
-            h9 = ((hits_allowed / games_n) / ip) * 9.0
-            era = ((runs_allowed / games_n) / ip) * 9.0
-        else:
-            k9 = h9 = era = 0.0
         rows.append(
             {
                 "name": starter.name,
-                "team": team,
-                "ip": f"{ip:.1f}",
-                "k9": f"{k9:.1f}",
-                "h9": f"{h9:.1f}",
-                "era": f"{era:.2f}",
-                "note": "",
+                "ip": f"{getattr(stats, 'innings_pitched_per_game', 0.0):.1f}",
+                "k": f"{stats.k_per_game:.1f}",
+                "five_plus_k": f"{getattr(stats, 'k_5_plus_pct', 0.0) * 100:.1f}%",
+                "er": f"{stats.runs_per_game:.1f}",
+                "qs_pct": f"{getattr(stats, 'quality_start_pct', 0.0) * 100:.1f}%",
             }
         )
     return rows
@@ -294,7 +279,12 @@ def _build_plain_report(
     lines.append("Batters:")
     for row in _batter_rate_rows(game_context, result, simulated_games, is_home=False):
         lines.append(
-            f"{row['name']}: AVG {row['avg']} OBP {row['obp']} SLG {row['slg']} K% {row['k_pct']} HR% {row['hr_pct']} 2+H {row['two_plus_hits']}"
+            f"{row['name']}: AVG {row['avg']} OBP {row['obp']} TB {row['tb']} K% {row['k_pct']} 2+H {row['two_plus_hits']} HR% {row['hr_pct']}"
+        )
+    lines.append("Starting pitchers:")
+    for row in _starter_rows(game_context, result):
+        lines.append(
+            f"{row['name']}: IP {row['ip']} K {row['k']} 5+K% {row['five_plus_k']} ER {row['er']} QS% {row['qs_pct']}"
         )
     return "\n".join(lines)
 
@@ -367,27 +357,66 @@ def _build_summary_panel(result: SimulationResult, game_context: GameContext):
 
 
 def _build_quality_panel(game_context: GameContext, data_warnings: list[str]):
-    lines = []
-    source_counts = _count_batter_sources(game_context)
-    if source_counts["2026"]:
-        lines.append(Text(f"✓ {source_counts['2026']} batters using 2026 stats", style="green"))
-    if source_counts["2025"]:
-        lines.append(Text(f"⚠ {source_counts['2025']} batters using 2025 fallback", style="yellow"))
-    if source_counts["league_avg"]:
-        lines.append(Text(f"⚠ {source_counts['league_avg']} batters using league-average fallback", style="yellow"))
-    lines.append(Text(f"✓ Park factors: {game_context.park_factors.venue_name}", style="green"))
-    weather_style = "yellow" if _is_default_weather(game_context) else "green"
-    weather_prefix = "⚠" if _is_default_weather(game_context) else "✓"
-    weather_note = "default placeholder (no real data)" if _is_default_weather(game_context) else _weather_text(game_context)
-    lines.append(Text(f"{weather_prefix} Weather: {weather_note}", style=weather_style))
+    batters = game_context.away_lineup.batting_order + game_context.home_lineup.batting_order
+    pitchers = [
+        game_context.away_lineup.starting_pitcher,
+        game_context.home_lineup.starting_pitcher,
+    ]
+    batter_sources = _players_by_source(batters)
+    pitcher_sources = _players_by_source(pitchers)
+    default_weather = _is_default_weather(game_context)
 
-    missing = _group_missing_players(data_warnings)
-    if missing:
-        lines.append(Text(""))
-        lines.append(Text("Missing players:", style="bold"))
-        for category in ("batting", "pitching"):
-            if missing.get(category):
-                lines.append(Text(f"  {', '.join(missing[category])} ({category})", style="yellow"))
+    has_player_warnings = bool(
+        batter_sources.get("2025") or batter_sources.get("league_avg") or
+        pitcher_sources.get("2025") or pitcher_sources.get("league_avg")
+    )
+    if not has_player_warnings and not data_warnings and not default_weather:
+        return None
+
+    lines: list[Text] = []
+
+    # Missing players parsed from builder warnings
+    missing_batters: list[str] = []
+    missing_pitchers: list[str] = []
+    for w in data_warnings:
+        match = re.search(r"(?:batting|pitching) data for (.+?)(?:;|$)", w, re.IGNORECASE)
+        if match:
+            name = match.group(1).strip()
+            if "batting" in w.lower():
+                missing_batters.append(name)
+            else:
+                missing_pitchers.append(name)
+    if missing_batters or missing_pitchers:
+        all_missing = [f"{n} (batting)" for n in missing_batters] + [f"{n} (pitching)" for n in missing_pitchers]
+        lines.append(Text("Missing players:", style="bright_yellow"))
+        for wrapped_line in _wrap_names(all_missing):
+            lines.append(Text(f"  {wrapped_line}", style="bright_yellow"))
+
+    # Source-based player stats for non-current-year players
+    def add_source_group(
+        grouped: dict[str, list[str]],
+        source: str,
+        label: str,
+        description: str,
+        icon: str,
+        style: str,
+    ) -> None:
+        names = grouped.get(source, [])
+        if not names:
+            return
+        noun = label if len(names) == 1 else f"{label}s"
+        lines.append(Text(f"{icon} {len(names)} {noun} using {description}:", style=style))
+        for wrapped_line in _wrap_names(names):
+            lines.append(Text(f"  {wrapped_line}", style=style))
+
+    add_source_group(batter_sources, "2025", "batter", "2025 stats", "⚠", "yellow")
+    add_source_group(batter_sources, "league_avg", "batter", "league-average fallback", "⚠", "bright_yellow")
+    add_source_group(pitcher_sources, "2025", "pitcher", "2025 stats", "⚠", "yellow")
+    add_source_group(pitcher_sources, "league_avg", "pitcher", "league-average fallback", "⚠", "bright_yellow")
+
+    if default_weather:
+        lines.append(Text("⚠ Weather: default placeholder (no real data)", style="yellow"))
+
     return Panel(Group(*lines), title="DATA QUALITY", border_style="yellow")
 
 
@@ -399,10 +428,10 @@ def _build_batter_block(team_name: str, rows: list[dict[str, str]]):
                 ("Player", 32, "left"),
                 ("AVG", 7, "right"),
                 ("OBP", 7, "right"),
-                ("SLG", 7, "right"),
+                ("TB", 7, "right"),
                 ("K%", 7, "right"),
+                ("2+H%", 8, "right"),
                 ("HR%", 7, "right"),
-                ("2+ H%", 8, "right"),
             ],
             style="bold",
         ),
@@ -414,10 +443,10 @@ def _build_batter_block(team_name: str, rows: list[dict[str, str]]):
                     ("", 32, "left"),
                     (row["avg"], 7, "right"),
                     (row["obp"], 7, "right"),
-                    (row["slg"], 7, "right"),
+                    (row["tb"], 7, "right"),
                     (row["k_pct"], 7, "right"),
-                    (row["hr_pct"], 7, "right"),
                     (row["two_plus_hits"], 8, "right"),
+                    (row["hr_pct"], 7, "right"),
                 ],
                 dot_leader_name=row["name"],
             )
@@ -431,36 +460,29 @@ def _build_pitcher_block(rows: list[dict[str, str]]):
         _column_line(
             [
                 ("Pitcher", 32, "left"),
-                ("Team", 6, "right"),
                 ("IP", 6, "right"),
-                ("K/9", 7, "right"),
-                ("H/9", 7, "right"),
-                ("ERA*", 8, "right"),
+                ("K", 6, "right"),
+                ("5+K%", 8, "right"),
+                ("ER", 6, "right"),
+                ("QS%", 8, "right"),
             ],
             style="bold",
         ),
     ]
-    note = ""
     for row in rows:
         lines.append(
             _column_line(
                 [
                     ("", 32, "left"),
-                    (row["team"], 6, "right"),
                     (row["ip"], 6, "right"),
-                    (row["k9"], 7, "right"),
-                    (row["h9"], 7, "right"),
-                    (row["era"], 8, "right"),
+                    (row["k"], 6, "right"),
+                    (row["five_plus_k"], 8, "right"),
+                    (row["er"], 6, "right"),
+                    (row["qs_pct"], 8, "right"),
                 ],
                 dot_leader_name=row["name"],
             )
         )
-        if row.get("note"):
-            note = row["note"]
-    if note:
-        lines.append(Text(note, style="dim"))
-    else:
-        lines.append(Text("* projected from simulation averages", style="dim"))
     return Group(*lines)
 
 
@@ -487,11 +509,13 @@ def build_terminal_output(
     if sample_game is not None and sample_index is not None:
         sections.append(_build_linescore_table(result, sample_game, sample_index))
     sections.append(_build_summary_panel(result, game_context))
-    sections.append(_build_quality_panel(game_context, data_warnings))
+    quality_panel = _build_quality_panel(game_context, data_warnings)
+    if quality_panel is not None:
+        sections.append(quality_panel)
 
     away_rows = _batter_rate_rows(game_context, result, all_games, is_home=False)
     home_rows = _batter_rate_rows(game_context, result, all_games, is_home=True)
-    pitcher_rows = _starter_rows(game_context, all_games)
+    pitcher_rows = _starter_rows(game_context, result)
     sections.append(
         Panel(
             Group(
@@ -501,7 +525,7 @@ def build_terminal_output(
                 Text(""),
                 _build_pitcher_block(pitcher_rows),
             ),
-            title=f"PLAYER PROJECTIONS (per-game rates from {result.n_simulations:,} sims)",
+            title=f"PLAYER PROJECTIONS (matchup-adjusted, {result.n_simulations:,} sims)",
             border_style="magenta",
         )
     )

@@ -64,6 +64,7 @@ class BatterStats:
     bats: Hand              # L, R, or S (switch)
     pa: int                 # plate appearances in this split
     rates: dict[str, float] # outcome rates keyed by OUTCOMES, should sum to ~1.0
+    data_source: str = "unknown"
 
     def __post_init__(self):
         _validate_rates(self.rates, tolerance=0.02, label=f"BatterStats({self.name})")
@@ -78,6 +79,7 @@ class PitcherStats:
     pa_against: int             # plate appearances against in this split
     rates: dict[str, float]     # outcome rates allowed, keyed by OUTCOMES
     avg_pitch_count: float = 0.0  # average pitches per start (stamina modeling)
+    data_source: str = "unknown"
 
     def __post_init__(self):
         _validate_rates(self.rates, tolerance=0.02, label=f"PitcherStats({self.name})")

@@ -57,6 +57,9 @@ def configure_logging(verbose: bool, json_mode: bool) -> None:
     """Configure logging to stderr based on output mode."""
     level = logging.CRITICAL if json_mode else (logging.INFO if verbose else logging.WARNING)
     logging.basicConfig(level=level, stream=sys.stderr, format="%(levelname)s: %(message)s", force=True)
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        handler.setLevel(level)
 
 
 def filter_games(games: list[dict], team: str | None = None, game_id: str | None = None) -> list[dict]:
@@ -121,11 +124,11 @@ def format_terminal_report(
 
 @contextmanager
 def capture_data_warnings() -> list[str]:
-    """Capture warning log records emitted during data assembly."""
+    """Capture data-source log records emitted during data assembly."""
 
     class _ListHandler(logging.Handler):
         def __init__(self):
-            super().__init__(level=logging.WARNING)
+            super().__init__(level=logging.INFO)
             self.messages: list[str] = []
 
         def emit(self, record: logging.LogRecord) -> None:
@@ -142,7 +145,7 @@ def capture_data_warnings() -> list[str]:
     previous_levels = {logger_obj.name: logger_obj.level for logger_obj in target_loggers}
     for logger_obj in target_loggers:
         logger_obj.addHandler(handler)
-        logger_obj.setLevel(logging.WARNING)
+        logger_obj.setLevel(logging.INFO)
     try:
         yield handler.messages
     finally:
@@ -287,6 +290,8 @@ def run_cli(args: argparse.Namespace) -> int:
         if args.verbose:
             logger.info("done (%.1fs)", time.time() - start_time)
         if not args.json:
+            if index > 1:
+                print("-" * 90)
             sample_index = None
             sample_game = None
             if simulated_games:
