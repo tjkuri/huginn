@@ -31,6 +31,7 @@ mlb/                             MLB Monte Carlo simulation engine
   scripts/format_output.py       Rich terminal formatter for box score, summary, data quality, players
   scripts/test_smoke.py          Synthetic end-to-end smoke test (no APIs)
   scripts/diagnose_calibration.py League-average diagnostic for PA/run calibration
+  scripts/diagnose_pitchers.py    Diagnostic for probable pitcher assignment vs roster fallback
 tests/mlb/                       pytest test suite (183 tests)
 ```
 
@@ -61,6 +62,9 @@ python -m mlb.scripts.test_smoke
 
 # Run league-average calibration diagnostic
 python -m mlb.scripts.diagnose_calibration
+
+# Diagnose probable pitcher assignment vs roster fallback
+python -m mlb.scripts.diagnose_pitchers
 
 # Run MLB simulation tests
 python -m pytest tests/mlb/test_simulate.py -v
@@ -137,6 +141,7 @@ Key files in the sibling repo for understanding the data:
 - **Stats load errors propagate.** `load_schedule_and_stats` in the CLI does not swallow fetch exceptions — if pybaseball or MLB-StatsAPI fails, the error surfaces rather than silently producing all-league-average output.
 - **PitcherSimStats extends PlayerSimStats for prop markets.** `aggregate.py` tracks pitcher outs/K/ER per simulation and computes IP, 5+K%, and QS% alongside the base fields. The formatter uses these directly; do not recompute from raw `pa_results`.
 - **Pitcher display uses prop-market columns.** The player projections panel shows IP, K, 5+K%, ER, QS% — not rate stats like K/9 or ERA. This matches how sportsbooks present pitcher props.
+- **Probable pitchers preferred over roster fallback.** `fetch_todays_games()` captures `away_probable_pitcher` / `home_probable_pitcher` from the schedule API. `_resolve_lineup()` uses these names when the boxscore lineup is not yet confirmed; it only falls back to the first roster arm when the probable field is empty. Schedule caches that predate these keys are invalidated and re-fetched automatically.
 
 ## Future Work
 

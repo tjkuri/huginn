@@ -265,6 +265,8 @@ class TestFetchTodaysGames:
                 "game_datetime": "2026-04-02T23:05:00Z",
                 "venue": "Fenway Park",
                 "status": "Scheduled",
+                "away_probable_pitcher": "",
+                "home_probable_pitcher": "",
             }
         ]
 

@@ -44,7 +44,15 @@ def _extract_team(block: dict[str, Any], side: str) -> tuple[str, str]:
 def _schedule_cache_is_valid(games: list[dict]) -> bool:
     if not games:
         return True
-    return all(game.get("away_team") and game.get("home_team") for game in games)
+    # Require probable pitcher keys to exist (may be empty string if TBD).
+    # Old caches that predate this field will be missing the key and must be re-fetched.
+    return all(
+        game.get("away_team")
+        and game.get("home_team")
+        and "away_probable_pitcher" in game
+        and "home_probable_pitcher" in game
+        for game in games
+    )
 
 
 def fetch_todays_games(date: str | None = None) -> list[dict]:
@@ -73,6 +81,8 @@ def fetch_todays_games(date: str | None = None) -> list[dict]:
                 "game_datetime": game.get("game_datetime") or game.get("gameDate") or "",
                 "venue": game.get("venue_name") or game.get("venue") or "",
                 "status": game.get("status") or game.get("detailed_state") or "",
+                "away_probable_pitcher": str(game.get("away_probable_pitcher") or ""),
+                "home_probable_pitcher": str(game.get("home_probable_pitcher") or ""),
             }
         )
 

@@ -116,14 +116,47 @@ def _resolve_lineup(game_info: dict) -> dict:
     if lineup is not None:
         return lineup
 
-    away_batters, away_pitcher = build_default_lineup_from_roster(
+    away_batters, roster_away_pitcher = build_default_lineup_from_roster(
         int(game_info["away_team_id"]),
         season=SEASON,
     )
-    home_batters, home_pitcher = build_default_lineup_from_roster(
+    home_batters, roster_home_pitcher = build_default_lineup_from_roster(
         int(game_info["home_team_id"]),
         season=SEASON,
     )
+
+    # Prefer probable pitchers from the schedule; fall back to first roster arm only if missing.
+    away_probable = str(game_info.get("away_probable_pitcher") or "").strip()
+    home_probable = str(game_info.get("home_probable_pitcher") or "").strip()
+
+    away_pitcher = (
+        {"name": away_probable, "id": "", "throws": roster_away_pitcher.get("throws", "R")}
+        if away_probable
+        else roster_away_pitcher
+    )
+    home_pitcher = (
+        {"name": home_probable, "id": "", "throws": roster_home_pitcher.get("throws", "R")}
+        if home_probable
+        else roster_home_pitcher
+    )
+
+    if away_probable:
+        logger.info("Using probable starter %r for %s", away_probable, game_info.get("away_team", "away"))
+    else:
+        logger.warning(
+            "No probable pitcher for %s; using first roster arm %r",
+            game_info.get("away_team", "away"),
+            roster_away_pitcher.get("name"),
+        )
+    if home_probable:
+        logger.info("Using probable starter %r for %s", home_probable, game_info.get("home_team", "home"))
+    else:
+        logger.warning(
+            "No probable pitcher for %s; using first roster arm %r",
+            game_info.get("home_team", "home"),
+            roster_home_pitcher.get("name"),
+        )
+
     return {
         "away_batters": away_batters,
         "home_batters": home_batters,
