@@ -7,7 +7,7 @@ import logging
 import random
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -26,9 +26,19 @@ from mlb.engine.aggregate import (
 )
 from mlb.scripts.format_output import build_terminal_output
 
+try:
+    from rich.console import Console
+
+    HAS_RICH = True
+except ImportError:  # pragma: no cover
+    Console = None
+    HAS_RICH = False
+
 logger = logging.getLogger(__name__)
 
 _PROGRESS_CHUNK_SIZE = 1000
+TERMINAL_WIDTH = 90
+TERMINAL_CONSOLE = Console(width=TERMINAL_WIDTH) if HAS_RICH else None
 
 
 def _today_str() -> str:
@@ -60,6 +70,13 @@ def configure_logging(verbose: bool, json_mode: bool) -> None:
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:
         handler.setLevel(level)
+
+
+def _status_context(message: str, json_mode: bool):
+    """Return a Rich status context when terminal output is enabled."""
+    if json_mode or not HAS_RICH or TERMINAL_CONSOLE is None:
+        return nullcontext()
+    return TERMINAL_CONSOLE.status(f"[bold]{message}")
 
 
 def filter_games(games: list[dict], team: str | None = None, game_id: str | None = None) -> list[dict]:
@@ -209,11 +226,13 @@ def load_schedule_and_stats(target_date: str, verbose: bool = False) -> tuple[li
     """Fetch schedule and cached/fresh stat inputs."""
     if verbose:
         logger.info("Fetching schedule for %s...", target_date)
-    games = fetch_todays_games(date=target_date)
+    with _status_context("Fetching schedule...", json_mode=False):
+        games = fetch_todays_games(date=target_date)
     if verbose:
         logger.info("%s games found", len(games))
         logger.info("Loading batting stats...")
-    batting_data = fetch_batting_splits(season=SEASON)
+    with _status_context("Loading batting stats...", json_mode=False):
+        batting_data = fetch_batting_splits(season=SEASON)
     if verbose:
         counts: dict[str, int] = {}
         for player in batting_data.values():
@@ -223,7 +242,8 @@ def load_schedule_and_stats(target_date: str, verbose: bool = False) -> tuple[li
 
     if verbose:
         logger.info("Loading pitching stats...")
-    pitching_data = fetch_pitching_splits(season=SEASON)
+    with _status_context("Loading pitching stats...", json_mode=False):
+        pitching_data = fetch_pitching_splits(season=SEASON)
     if verbose:
         counts = {}
         for player in pitching_data.values():
@@ -238,7 +258,12 @@ def run_cli(args: argparse.Namespace) -> int:
     configure_logging(args.verbose, args.json)
 
     try:
-        games, batting_data, pitching_data = load_schedule_and_stats(args.date, verbose=args.verbose)
+        if args.json:
+            games = fetch_todays_games(date=args.date)
+            batting_data = fetch_batting_splits(season=SEASON)
+            pitching_data = fetch_pitching_splits(season=SEASON)
+        else:
+            games, batting_data, pitching_data = load_schedule_and_stats(args.date, verbose=args.verbose)
     except Exception as exc:
         if args.json:
             print(json.dumps({"error": str(exc)}))
@@ -272,13 +297,14 @@ def run_cli(args: argparse.Namespace) -> int:
         try:
             with capture_data_warnings() as data_warnings:
                 context = build_game_context(game, batting_data, pitching_data)
-            result, simulated_games = simulate_game_context(
-                context,
-                n_simulations=args.sims,
-                base_seed=game_seed,
-                verbose=args.verbose and not args.json,
-                progress_label=label,
-            )
+            with _status_context(f"Simulating {args.sims:,} games - {label}...", json_mode=args.json):
+                result, simulated_games = simulate_game_context(
+                    context,
+                    n_simulations=args.sims,
+                    base_seed=game_seed,
+                    verbose=args.verbose and not args.json,
+                    progress_label=label,
+                )
         except Exception as exc:
             logger.warning("Skipping %s due to simulation error: %s", label, exc)
             if args.verbose and not args.json:
@@ -309,9 +335,7 @@ def run_cli(args: argparse.Namespace) -> int:
             if isinstance(renderable, str):
                 print(renderable)
             else:
-                from rich.console import Console
-
-                Console(width=90).print(renderable)
+                TERMINAL_CONSOLE.print(renderable)
 
     if args.json:
         print(json.dumps(outputs, indent=None))
