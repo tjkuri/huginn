@@ -112,7 +112,10 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
     for game in games:
         # Tally stats for each player within this one simulation
         game_stats: dict[str, dict] = defaultdict(
-            lambda: {'pa': 0, 'hits': 0, 'hr': 0, 'bb': 0, 'k': 0, 'tb': 0, 'rbi': 0}
+            lambda: {
+                'pa': 0, 'hits': 0, '2b': 0, 'hr': 0,
+                'bb': 0, 'hbp': 0, 'k': 0, 'tb': 0, 'rbi': 0,
+            }
         )
         for pa in game.pa_results:
             pid = pa.batter_id
@@ -121,10 +124,14 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
             if pa.outcome in _HIT_OUTCOMES:
                 s['hits'] += 1
                 s['tb'] += _TOTAL_BASES[pa.outcome]
+            if pa.outcome == Outcome.DOUBLE:
+                s['2b'] += 1
             if pa.outcome == Outcome.HR:
                 s['hr'] += 1
-            if pa.outcome in (Outcome.BB, Outcome.HBP):
+            if pa.outcome == Outcome.BB:
                 s['bb'] += 1
+            if pa.outcome == Outcome.HBP:
+                s['hbp'] += 1
             if pa.outcome == Outcome.K:
                 s['k'] += 1
             s['rbi'] += pa.runs_scored
@@ -135,8 +142,10 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
     result: dict[str, PlayerSimStats] = {}
     for pid, game_stats_list in per_game.items():
         hits = np.array([s['hits'] for s in game_stats_list], dtype=float)
+        doubles = np.array([s['2b'] for s in game_stats_list], dtype=float)
         hr = np.array([s['hr'] for s in game_stats_list], dtype=float)
         bb = np.array([s['bb'] for s in game_stats_list], dtype=float)
+        hbp = np.array([s['hbp'] for s in game_stats_list], dtype=float)
         k = np.array([s['k'] for s in game_stats_list], dtype=float)
         tb = np.array([s['tb'] for s in game_stats_list], dtype=float)
         pa = np.array([s['pa'] for s in game_stats_list], dtype=float)
@@ -151,6 +160,8 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
             bb_per_game=float(np.mean(bb)),
             k_per_game=float(np.mean(k)),
             runs_per_game=float(np.mean(rbi)),
+            doubles_per_game=float(np.mean(doubles)),
+            hbp_per_game=float(np.mean(hbp)),
             total_bases_per_game=float(np.mean(tb)),
             hits_per_game_std=float(np.std(hits)),
             hr_per_game_std=float(np.std(hr)),

@@ -693,3 +693,13 @@ class TestSimulateGame:
         result = simulate_game(ctx, LEAGUE_AVERAGES, seed=42)
         assert isinstance(result, SimulatedGame)
         assert result.game_id == 'test-001'
+
+    def test_inning_scores_match_totals(self):
+        """Per-inning scores sum to the final runs for both teams."""
+        ctx = _make_game_context()
+        result = simulate_game(ctx, LEAGUE_AVERAGES, seed=42)
+        assert set(result.inning_scores.keys()) == {"away", "home"}
+        assert sum(result.inning_scores["away"]) == result.away_runs
+        assert sum(result.inning_scores["home"]) == result.home_runs
+        assert len(result.inning_scores["away"]) >= 9
+        assert len(result.inning_scores["home"]) <= len(result.inning_scores["away"])

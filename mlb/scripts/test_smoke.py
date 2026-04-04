@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from mlb.config import Hand, LEAGUE_AVERAGES, WindDirection
 from mlb.data.models import BatterStats, GameContext, Lineup, ParkFactors, PitcherStats, Weather
-from mlb.engine.aggregate import aggregate_simulations
+from mlb.engine.aggregate import aggregate_simulations, run_simulations
 from mlb.scripts.simulate_game import format_terminal_report, serialize_simulation_result
 
 
@@ -76,6 +76,7 @@ def build_synthetic_game_context() -> GameContext:
 def main() -> int:
     """Run the full synthetic pipeline and validate the result shape."""
     context = build_synthetic_game_context()
+    sample_games = run_simulations(context, LEAGUE_AVERAGES, n_simulations=100, base_seed=7)
     result = aggregate_simulations(context, LEAGUE_AVERAGES, n_simulations=100, base_seed=7)
     payload = serialize_simulation_result(result, context, seed=7, data_warnings=[])
 
@@ -95,7 +96,20 @@ def main() -> int:
     missing = required_keys - payload.keys()
     assert not missing, f"Smoke payload missing keys: {sorted(missing)}"
 
-    print(format_terminal_report(result, context, []))
+    renderable = format_terminal_report(
+        result,
+        context,
+        [],
+        sample_game=sample_games[6],
+        sample_index=7,
+        simulated_games=sample_games,
+    )
+    if isinstance(renderable, str):
+        print(renderable)
+    else:
+        from rich.console import Console
+
+        Console().print(renderable)
     print("Smoke test passed.")
     return 0
 

@@ -28,9 +28,10 @@ mlb/                             MLB Monte Carlo simulation engine
   engine/probabilities.py        Odds ratio, park/weather adjustments, PA probability tables
   engine/simulate.py             Game simulation: outcome sampling, baserunners, 9-inning loop
   scripts/simulate_game.py       CLI entry point for schedule→data→simulation→JSON/report flow
+  scripts/format_output.py       Rich terminal formatter for box score, summary, data quality, players
   scripts/test_smoke.py          Synthetic end-to-end smoke test (no APIs)
   scripts/diagnose_calibration.py League-average diagnostic for PA/run calibration
-tests/mlb/                       pytest test suite (181 tests)
+tests/mlb/                       pytest test suite (183 tests)
 ```
 
 ## Commands
@@ -122,8 +123,11 @@ Key files in the sibling repo for understanding the data:
 - **Missing real-player data falls back to league average.** Unknown batters/pitchers log warnings and use league-average rates so game-context assembly does not fail.
 - **Park factors are coarse annual inputs.** `mlb/data/park_factors.py` uses hardcoded approximate 2025 factors that should be refreshed annually.
 - **CLI has two output modes.** `mlb/scripts/simulate_game.py` prints human-readable summaries by default and emits clean JSON arrays on stdout with `--json`.
+- **CLI rich output is isolated from orchestration.** Terminal rendering lives in `mlb/scripts/format_output.py`; `simulate_game.py` stays focused on fetch/filter/run/serialize flow.
 - **JSON mode must keep stdout clean.** Logging/progress go to stderr or are suppressed so Yggdrasil can consume stdout directly.
 - **Verbose simulation uses chunked execution.** The CLI batches simulations in 1000-sim chunks when `--verbose` is enabled so progress can be reported without changing engine internals.
+- **SimulatedGame now carries inning scores.** `inning_scores = {'away': [...], 'home': [...]}` is populated during simulation so the CLI can render a sample line score without re-simulating.
+- **Player projections include enough data for batting lines.** Aggregation now tracks doubles and HBP alongside hits/HR/BB/K so the Rich player tables can show 2B and compute AVG from simulated AB.
 - **Synthetic smoke coverage is the fast end-to-end check.** `python -m mlb.scripts.test_smoke` validates the full pipeline without network access.
 - **Calibration bug fixed in inning state.** Non-out events must preserve the current out count; resetting outs to zero made half-innings continue until three consecutive outs and inflated scoring to ~26 runs/game.
 - **League-average neutral check is now the calibration baseline.** `python -m mlb.scripts.diagnose_calibration` should land around 8.5-9.5 total runs/game, ~70-80 PAs, and ~54 outs.

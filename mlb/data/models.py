@@ -175,6 +175,7 @@ class SimulatedGame:
     home_hits: int
     pa_results: list[PAResult]
     innings_played: int
+    inning_scores: dict[str, list[int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -188,6 +189,8 @@ class PlayerSimStats:
     bb_per_game: float       # mean walks per game
     k_per_game: float        # mean strikeouts per game
     runs_per_game: float     # mean runs scored (batters) or allowed (pitchers)
+    doubles_per_game: float = 0.0
+    hbp_per_game: float = 0.0
     total_bases_per_game: float = 0.0
     hits_per_game_std: float = 0.0
     hr_per_game_std: float = 0.0

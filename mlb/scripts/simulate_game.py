@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 import sys
 import time
 from contextlib import contextmanager
@@ -14,16 +15,16 @@ from enum import Enum
 from mlb.config import LEAGUE_AVERAGES, NUM_SIMULATIONS, SEASON
 from mlb.data.builder import build_game_context
 from mlb.data.lineups import fetch_todays_games
-from mlb.data.models import GameContext, SimulationResult
+from mlb.data.models import GameContext, SimulatedGame, SimulationResult
 from mlb.data.stats import fetch_batting_splits, fetch_pitching_splits
 from mlb.engine.aggregate import (
-    aggregate_simulations,
     compute_betting_lines,
     compute_player_stats,
     compute_run_distributions,
     compute_win_probability,
     run_simulations,
 )
+from mlb.scripts.format_output import build_terminal_output
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,18 @@ def serialize_simulation_result(
     return payload
 
 
+def format_terminal_report(
+    result: SimulationResult,
+    game_context: GameContext,
+    data_warnings: list[str],
+    sample_game: SimulatedGame | None = None,
+    sample_index: int | None = None,
+    simulated_games: list[SimulatedGame] | None = None,
+):
+    """Build a terminal report renderable or plain-text string."""
+    return build_terminal_output(result, game_context, sample_game, sample_index, data_warnings, simulated_games)
+
+
 @contextmanager
 def capture_data_warnings() -> list[str]:
     """Capture warning log records emitted during data assembly."""
@@ -144,32 +157,32 @@ def simulate_game_context(
     base_seed: int | None = None,
     verbose: bool = False,
     progress_label: str | None = None,
-) -> SimulationResult:
+) -> tuple[SimulationResult, list[SimulatedGame]]:
     """Run simulations for one game, optionally in chunks for progress reporting."""
     if not verbose or n_simulations <= _PROGRESS_CHUNK_SIZE:
-        return aggregate_simulations(game_context, LEAGUE_AVERAGES, n_simulations, base_seed)
+        all_games = run_simulations(game_context, LEAGUE_AVERAGES, n_simulations, base_seed)
+    else:
+        remaining = n_simulations
+        completed = 0
+        all_games = []
+        label = progress_label or game_context.game_id
+        start_seed = base_seed
 
-    remaining = n_simulations
-    completed = 0
-    all_games = []
-    label = progress_label or game_context.game_id
-    start_seed = base_seed
-
-    while remaining > 0:
-        chunk_size = min(_PROGRESS_CHUNK_SIZE, remaining)
-        chunk_seed = None if start_seed is None else start_seed + completed
-        chunk_games = run_simulations(game_context, LEAGUE_AVERAGES, chunk_size, chunk_seed)
-        all_games.extend(chunk_games)
-        completed += chunk_size
-        remaining -= chunk_size
-        logger.info("  progress %s/%s sims for %s", completed, n_simulations, label)
+        while remaining > 0:
+            chunk_size = min(_PROGRESS_CHUNK_SIZE, remaining)
+            chunk_seed = None if start_seed is None else start_seed + completed
+            chunk_games = run_simulations(game_context, LEAGUE_AVERAGES, chunk_size, chunk_seed)
+            all_games.extend(chunk_games)
+            completed += chunk_size
+            remaining -= chunk_size
+            logger.info("  progress %s/%s sims for %s", completed, n_simulations, label)
 
     run_dists = compute_run_distributions(all_games)
     win_probs = compute_win_probability(all_games)
     player_stats = compute_player_stats(all_games)
     betting_lines = compute_betting_lines(all_games, run_dists)
 
-    return SimulationResult(
+    result = SimulationResult(
         game_id=game_context.game_id,
         n_simulations=n_simulations,
         away_team=game_context.away_lineup.team_name,
@@ -186,83 +199,7 @@ def simulate_game_context(
         betting_lines=betting_lines,
         run_distributions=run_dists,
     )
-
-
-def _format_moneyline(probability: float) -> str:
-    probability = max(0.001, min(0.999, probability))
-    if probability > 0.5:
-        american = -(probability / (1.0 - probability)) * 100.0
-    elif probability < 0.5:
-        american = ((1.0 - probability) / probability) * 100.0
-    else:
-        american = 100.0
-    return f"{american:+.0f}"
-
-
-def _count_batter_sources(game_context: GameContext) -> dict[str, int]:
-    counts = {"2026": 0, "2025": 0, "league_avg": 0, "other": 0}
-    batters = game_context.away_lineup.batting_order + game_context.home_lineup.batting_order
-    for batter in batters:
-        source = getattr(batter, "data_source", "other")
-        if source in counts:
-            counts[source] += 1
-        else:
-            counts["other"] += 1
-    return counts
-
-
-def format_terminal_report(
-    result: SimulationResult,
-    game_context: GameContext,
-    data_warnings: list[str],
-) -> str:
-    """Format one simulation result for human-readable terminal output."""
-    lines = []
-    divider = "=" * 55
-    lines.append(divider)
-    lines.append(f"  {result.away_team} @ {result.home_team} - {game_context.date} - {game_context.park_factors.venue_name}")
-    lines.append(f"  {result.n_simulations:,} simulations")
-    lines.append(divider)
-    lines.append(f"  Total runs:  {result.total_runs_mean:.1f} +/- {result.total_runs_std:.1f}")
-    lines.append(f"  Away ({result.away_team}):  {result.away_runs_mean:.1f} +/- {result.away_runs_std:.1f}")
-    lines.append(f"  Home ({result.home_team}):  {result.home_runs_mean:.1f} +/- {result.home_runs_std:.1f}")
-    lines.append("")
-    lines.append("  Win probability:")
-    lines.append(f"    {result.home_team}: {result.home_win_pct * 100:.1f}%    {result.away_team}: {result.away_win_pct * 100:.1f}%")
-    lines.append("")
-    lines.append("  Over/under:")
-    for line_value in (8.5, 9.0, 9.5):
-        market = result.betting_lines.get("totals", {}).get(line_value)
-        if not market:
-            continue
-        lines.append(
-            f"    O/U {line_value:.1f}:  Over {market['over_pct'] * 100:.1f}%  |  Under {market['under_pct'] * 100:.1f}%"
-        )
-    lines.append("")
-    lines.append("  Moneyline (no-vig):")
-    lines.append(
-        f"    {result.home_team}: {_format_moneyline(result.home_win_pct)}    "
-        f"{result.away_team}: {_format_moneyline(result.away_win_pct)}"
-    )
-    lines.append("")
-    lines.append("  Data notes:")
-    source_counts = _count_batter_sources(game_context)
-    if source_counts["2026"]:
-        lines.append(f"    OK {source_counts['2026']} batters using 2026 stats")
-    if source_counts["2025"]:
-        lines.append(f"    WARN {source_counts['2025']} batters using 2025 fallback")
-    if source_counts["league_avg"]:
-        lines.append(f"    WARN {source_counts['league_avg']} batters using league-average fallback")
-    if not any(source_counts.values()):
-        lines.append("    OK no player fallbacks")
-    weather_label = "indoor/default" if game_context.weather and game_context.weather.is_indoor else "outdoor/default"
-    lines.append(f"    OK Park factors: {game_context.park_factors.venue_name}")
-    lines.append(f"    OK Weather: {weather_label}")
-    if data_warnings:
-        for warning in data_warnings[:3]:
-            lines.append(f"    WARN {warning}")
-    lines.append(divider)
-    return "\n".join(lines)
+    return result, all_games
 
 
 def load_schedule_and_stats(target_date: str, verbose: bool = False) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
@@ -332,7 +269,7 @@ def run_cli(args: argparse.Namespace) -> int:
         try:
             with capture_data_warnings() as data_warnings:
                 context = build_game_context(game, batting_data, pitching_data)
-            result = simulate_game_context(
+            result, simulated_games = simulate_game_context(
                 context,
                 n_simulations=args.sims,
                 base_seed=game_seed,
@@ -350,7 +287,26 @@ def run_cli(args: argparse.Namespace) -> int:
         if args.verbose:
             logger.info("done (%.1fs)", time.time() - start_time)
         if not args.json:
-            print(format_terminal_report(result, context, data_warnings))
+            sample_index = None
+            sample_game = None
+            if simulated_games:
+                rng = random.Random(game_seed if game_seed is not None else result.n_simulations)
+                sample_index = rng.randrange(len(simulated_games)) + 1
+                sample_game = simulated_games[sample_index - 1]
+            renderable = format_terminal_report(
+                result,
+                context,
+                data_warnings,
+                sample_game,
+                sample_index,
+                simulated_games,
+            )
+            if isinstance(renderable, str):
+                print(renderable)
+            else:
+                from rich.console import Console
+
+                Console(width=90).print(renderable)
 
     if args.json:
         print(json.dumps(outputs, indent=None))

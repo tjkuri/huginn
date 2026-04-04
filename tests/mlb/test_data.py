@@ -131,6 +131,8 @@ class TestFetchBattingSplits:
 
         monkeypatch.setattr("mlb.data.stats._load_cached_players", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._write_cached_players", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._load_cached_season_players", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._write_cached_season_players", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (lambda season: FakeFrame(), None))
 
         data = fetch_batting_splits(use_cache=False)

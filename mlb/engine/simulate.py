@@ -365,6 +365,7 @@ def simulate_game(
     rng = np.random.default_rng(seed)
     game_state = GameState()
     all_pa_results: list[PAResult] = []
+    inning_scores = {'away': [], 'home': []}
 
     while game_state.inning <= _MAX_INNINGS:
         # ── Top of inning ────────────────────────────────────────────
@@ -376,11 +377,13 @@ def simulate_game(
         else:
             game_state.bases = BaseState()
 
+        away_before = game_state.away_score
         top_results = simulate_half_inning(
             game_context, game_state, is_top=True,
             league_averages=league_averages, rng=rng,
         )
         all_pa_results.extend(top_results)
+        inning_scores['away'].append(game_state.away_score - away_before)
 
         # Skip bottom if home already leads after 9th+ (game over)
         if game_state.inning >= 9 and game_state.home_score > game_state.away_score:
@@ -395,11 +398,13 @@ def simulate_game(
         else:
             game_state.bases = BaseState()
 
+        home_before = game_state.home_score
         bottom_results = simulate_half_inning(
             game_context, game_state, is_top=False,
             league_averages=league_averages, rng=rng,
         )
         all_pa_results.extend(bottom_results)
+        inning_scores['home'].append(game_state.home_score - home_before)
 
         # After complete inning: if not tied after 9+, game over
         if game_state.inning >= 9 and game_state.home_score != game_state.away_score:
@@ -428,4 +433,5 @@ def simulate_game(
         home_hits=home_hits,
         pa_results=all_pa_results,
         innings_played=game_state.inning,
+        inning_scores=inning_scores,
     )
