@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from datetime import date
 from typing import Any
 
-from mlb.config import DAILY_CACHE_TTL_DAYS, GAME_CACHE_TTL_DAYS, SEASON, SEASONAL_CACHE_TTL_DAYS
-from mlb.data.cache import read_cache, write_cache
+from mlb.config import SEASON
 
 logger = logging.getLogger(__name__)
 
@@ -15,8 +16,16 @@ def _today_str() -> str:
     return date.today().isoformat()
 
 
+_NAME_SUFFIX_RE = re.compile(r'\s+(jr|sr|ii|iii|iv)$')
+
+
 def _normalize_name(name: str) -> str:
-    return " ".join(str(name).strip().lower().split())
+    nfkd = unicodedata.normalize('NFD', str(name))
+    stripped = ''.join(c for c in nfkd if not unicodedata.category(c).startswith('M'))
+    stripped = stripped.replace('.', '')
+    stripped = ' '.join(stripped.strip().lower().split())
+    stripped = _NAME_SUFFIX_RE.sub('', stripped)
+    return stripped
 
 
 def _import_statsapi():
@@ -41,30 +50,9 @@ def _extract_team(block: dict[str, Any], side: str) -> tuple[str, str]:
     return str(team.get("id") or side_block.get("team_id") or ""), str(team.get("name") or side_block.get("name") or "")
 
 
-def _schedule_cache_is_valid(games: list[dict]) -> bool:
-    if not games:
-        return True
-    # Require probable pitcher keys to exist (may be empty string if TBD).
-    # Old caches that predate this field will be missing the key and must be re-fetched.
-    return all(
-        game.get("away_team")
-        and game.get("home_team")
-        and "away_probable_pitcher" in game
-        and "home_probable_pitcher" in game
-        for game in games
-    )
-
-
 def fetch_todays_games(date: str | None = None) -> list[dict]:
-    """Fetch the MLB schedule for one date."""
+    """Fetch the MLB schedule for one date. Always fetches fresh from the API."""
     schedule_date = date or _today_str()
-    cached = read_cache("schedule", "games", date=schedule_date, max_age_days=DAILY_CACHE_TTL_DAYS)
-    if cached:
-        cached_games = list(cached.get("games", []))
-        if _schedule_cache_is_valid(cached_games):
-            return cached_games
-        logger.warning("Discarding malformed cached schedule for %s", schedule_date)
-
     statsapi = _import_statsapi()
     raw_games = statsapi.schedule(date=schedule_date)
     games: list[dict] = []
@@ -85,8 +73,6 @@ def fetch_todays_games(date: str | None = None) -> list[dict]:
                 "home_probable_pitcher": str(game.get("home_probable_pitcher") or ""),
             }
         )
-
-    write_cache("schedule", "games", {"games": games}, date=schedule_date)
     return games
 
 
@@ -144,12 +130,7 @@ def _extract_pitcher(team_block: dict[str, Any]) -> dict | None:
 
 
 def fetch_game_lineup(game_id: int) -> dict | None:
-    """Fetch confirmed lineups for a game if they are available."""
-    cache_key = str(game_id)
-    cached = read_cache("lineups", cache_key, max_age_days=GAME_CACHE_TTL_DAYS)
-    if cached:
-        return cached.get("lineup")
-
+    """Fetch confirmed lineups for a game if they are available. Always fetches fresh."""
     statsapi = _import_statsapi()
     boxscore = statsapi.boxscore_data(game_id)
     away = boxscore.get("away", {})
@@ -170,17 +151,11 @@ def fetch_game_lineup(game_id: int) -> dict | None:
         logger.info("Confirmed lineups not available for game %s", game_id)
         return None
 
-    write_cache("lineups", cache_key, {"lineup": lineup})
     return lineup
 
 
 def fetch_team_roster(team_id: int, season: int = SEASON) -> list[dict]:
-    """Fetch and cache a team roster for one season."""
-    cache_key = f"{season}-{team_id}"
-    cached = read_cache("rosters", cache_key, max_age_days=SEASONAL_CACHE_TTL_DAYS)
-    if cached:
-        return list(cached.get("roster", []))
-
+    """Fetch a team roster for one season. Always fetches fresh."""
     statsapi = _import_statsapi()
     response = statsapi.get("team_roster", {"teamId": team_id, "season": season, "rosterType": "active"})
     roster_entries = response.get("roster", [])
@@ -198,8 +173,6 @@ def fetch_team_roster(team_id: int, season: int = SEASON) -> list[dict]:
                 "throws": ((entry.get("pitchHand") or {}).get("code") or "R").upper(),
             }
         )
-
-    write_cache("rosters", cache_key, {"roster": roster})
     return roster
 
 

@@ -19,7 +19,6 @@ tests/nba/                       pytest test suite (132 tests)
 mlb/                             MLB Monte Carlo simulation engine
   config.py                      Enums, league averages, season config, simulation defaults
   data/models.py                 Typed dataclasses for all MLB data structures
-  data/cache.py                  File-based JSON caching with TTL
   data/stats.py                  pybaseball fetchers + BatterStats/PitcherStats builders
   data/lineups.py                MLB Stats API schedule, lineup, and roster fetchers
   data/park_factors.py           Hardcoded park-factor table + team→venue lookup
@@ -32,7 +31,7 @@ mlb/                             MLB Monte Carlo simulation engine
   scripts/test_smoke.py          Synthetic end-to-end smoke test (no APIs)
   scripts/diagnose_calibration.py League-average diagnostic for PA/run calibration
   scripts/diagnose_pitchers.py    Diagnostic for probable pitcher assignment vs roster fallback
-tests/mlb/                       pytest test suite (183 tests)
+tests/mlb/                       pytest test suite (195 tests)
 ```
 
 ## Commands
@@ -121,7 +120,7 @@ Key files in the sibling repo for understanding the data:
 - **MLB data layer uses external sources.** `pybaseball` provides season stats; `MLB-StatsAPI` provides schedules, lineups, and rosters.
 - **Lazy imports protect tests.** Data fetch modules import external packages only when fetch functions are called, so mocked tests run without live network usage.
 - **Overall stats stand in for true splits in v1.** `mlb/data/stats.py` uses season-level overall rates for all handedness matchups. Proper split scraping is a future enhancement.
-- **Name matching is v1 identity resolution.** pybaseball and MLB Stats API players are matched by normalized player name for now; no persistent ID map yet.
+- **Name matching is v1 identity resolution.** pybaseball and MLB Stats API players are matched by normalized player name for now; no persistent ID map yet. Normalization strips Unicode accents (Agustín → agustin), removes periods from initials (J.C. → JC), and drops trailing suffixes (Jr./Sr./II/III).
 - **Early season uses prior-year coverage.** In April, 2026 batting/pitching thresholds drop to 20 PA / 10 IP. Players still below those thresholds fall back to 2025 season stats before league-average fallback.
 - **Player source tags are explicit.** Data-layer player payloads now carry `source` values of `2026`, `2025`, or `league_avg`, and the CLI reports batter source counts in data notes.
 - **Missing real-player data falls back to league average.** Unknown batters/pitchers log warnings and use league-average rates so game-context assembly does not fail.
@@ -135,13 +134,32 @@ Key files in the sibling repo for understanding the data:
 - **Synthetic smoke coverage is the fast end-to-end check.** `python -m mlb.scripts.test_smoke` validates the full pipeline without network access.
 - **Calibration bug fixed in inning state.** Non-out events must preserve the current out count; resetting outs to zero made half-innings continue until three consecutive outs and inflated scoring to ~26 runs/game.
 - **League-average neutral check is now the calibration baseline.** `python -m mlb.scripts.diagnose_calibration` should land around 8.5-9.5 total runs/game, ~70-80 PAs, and ~54 outs.
-- **Stat caches must be non-empty to be trusted.** Empty merged or seasonal player caches are discarded and rebuilt instead of freezing the system at all-fallback output.
+- **pybaseball is called with qual=1.** `batting_stats(season, qual=1)` and `pitching_stats(season, qual=1)` return all players with any PA/IP. The FanGraphs qualified-leaderboard default would silently drop most of the league. Our own PA/IP thresholds handle filtering.
 - **pybaseball K%/BB% are already decimals.** `batting_stats()` and `pitching_stats()` return `K%` and `BB%` as decimals (e.g. 0.182), not percentages (18.2). Do not divide by 100.
 - **pybaseball batter handedness column is `Bat` (singular).** The column is `Bat`, not `Bats`. `stats.py` tries `Bat` then `Bats` as fallback.
 - **Stats load errors propagate.** `load_schedule_and_stats` in the CLI does not swallow fetch exceptions — if pybaseball or MLB-StatsAPI fails, the error surfaces rather than silently producing all-league-average output.
 - **PitcherSimStats extends PlayerSimStats for prop markets.** `aggregate.py` tracks pitcher outs/K/ER per simulation and computes IP, 5+K%, and QS% alongside the base fields. The formatter uses these directly; do not recompute from raw `pa_results`.
 - **Pitcher display uses prop-market columns.** The player projections panel shows IP, K, 5+K%, ER, QS% — not rate stats like K/9 or ERA. This matches how sportsbooks present pitcher props.
-- **Probable pitchers preferred over roster fallback.** `fetch_todays_games()` captures `away_probable_pitcher` / `home_probable_pitcher` from the schedule API. `_resolve_lineup()` uses these names when the boxscore lineup is not yet confirmed; it only falls back to the first roster arm when the probable field is empty. Schedule caches that predate these keys are invalidated and re-fetched automatically.
+- **Probable pitchers preferred over roster fallback.** `fetch_todays_games()` captures `away_probable_pitcher` / `home_probable_pitcher` from the schedule API. `_resolve_lineup()` uses these names when the boxscore lineup is not yet confirmed; it only falls back to the first roster arm when the probable field is empty.
+
+## MLB Caching
+
+Only slow pybaseball scrapes are cached. Schedule, lineup, and roster data is always fetched fresh.
+
+```
+baseball_cache/
+  raw_batting-2025.json    ← prior season, kept forever (historical data never changes)
+  raw_pitching-2025.json   ← prior season, kept forever
+  raw_batting-2026.json    ← current season, re-fetched if older than 6 hours
+  raw_pitching-2026.json   ← current season, re-fetched if older than 6 hours
+  pybaseball/              ← pybaseball's own HTTP/DataFrame cache
+```
+
+**TTL logic:** `STATS_CACHE_MAX_AGE_HOURS = 6` in `mlb/config.py`. Files for seasons prior to `SEASON` never expire. Only the two current-season files are age-checked.
+
+**No merged/intermediate cache.** `fetch_batting_splits` and `fetch_pitching_splits` merge current + prior season data on every call (takes milliseconds). The raw files are the only persistence layer.
+
+**Cache invalidation:** Delete any of the four files to force a fresh scrape on next run. Delete `baseball_cache/pybaseball/` to force pybaseball to re-download from FanGraphs.
 
 ## Future Work
 

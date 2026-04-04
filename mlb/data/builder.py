@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 
 from mlb.config import Hand, LEAGUE_AVERAGES, SEASON
 from mlb.data.lineups import build_default_lineup_from_roster, fetch_game_lineup
@@ -13,8 +15,16 @@ from mlb.data.weather import get_game_weather
 logger = logging.getLogger(__name__)
 
 
+_NAME_SUFFIX_RE = re.compile(r'\s+(jr|sr|ii|iii|iv)$')
+
+
 def _normalize_name(name: str) -> str:
-    return " ".join(str(name).strip().lower().split())
+    nfkd = unicodedata.normalize('NFD', str(name))
+    stripped = ''.join(c for c in nfkd if not unicodedata.category(c).startswith('M'))
+    stripped = stripped.replace('.', '')
+    stripped = ' '.join(stripped.strip().lower().split())
+    stripped = _NAME_SUFFIX_RE.sub('', stripped)
+    return stripped
 
 
 def _league_average_batter(name: str, bats: str) -> dict:

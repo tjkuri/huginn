@@ -48,9 +48,9 @@ DEFAULT_PITCH_COUNT_LIMIT = 100
 
 CACHE_DIR = Path(__file__).parent.parent / "baseball_cache"
 
-SEASONAL_CACHE_TTL_DAYS = 30
-DAILY_CACHE_TTL_DAYS = 1
-GAME_CACHE_TTL_DAYS = 7
+# Current-season raw stats are re-fetched if older than this many hours.
+# Prior-season files are kept forever (historical data doesn't change).
+STATS_CACHE_MAX_AGE_HOURS = 6
 
 
 # ── League average PA outcome rates (2025 approx) ───────────────────────────

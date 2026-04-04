@@ -129,11 +129,9 @@ class TestFetchBattingSplits:
                     }
                 ]
 
-        monkeypatch.setattr("mlb.data.stats._load_cached_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._write_cached_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._load_cached_season_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._write_cached_season_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (lambda season: FakeFrame(), None))
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (lambda season, **kwargs: FakeFrame(), None))
 
         data = fetch_batting_splits(use_cache=False)
         player = data["sample batter"]
@@ -161,13 +159,11 @@ class TestFetchBattingSplits:
             {"Name": "Fallback Batter", "PA": 130, "K%": 0.22, "BB%": 0.11, "HBP": 1, "H": 32, "2B": 6, "3B": 1, "HR": 5, "IDfg": 2, "Team": "ABC", "Bat": "L"},
         ]
 
-        monkeypatch.setattr("mlb.data.stats._load_cached_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._write_cached_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._load_cached_season_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._write_cached_season_players", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
 
-        def fake_batting_stats(season):
+        def fake_batting_stats(season, **kwargs):
             return FakeFrame(rows_2026 if season == 2026 else rows_2025)
 
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (fake_batting_stats, None))
@@ -182,19 +178,34 @@ class TestFetchBattingSplits:
         monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
         assert _batting_threshold_for_season(2026) == 20
 
-    def test_2025_data_uses_seasonal_cache(self, monkeypatch):
-        calls = []
+    def test_2025_raw_cache_used_on_next_call(self, tmp_path, monkeypatch):
+        """After the first scrape, raw_batting-2025.json is loaded instead of re-scraping."""
+        import mlb.data.stats as stats_mod
+        monkeypatch.setattr(stats_mod, "CACHE_DIR", tmp_path)
+        monkeypatch.setattr(stats_mod, "SEASON", 2026)
 
-        def fake_read_cache(category, key, date=None, max_age_days=None):
-            calls.append((category, key, date, max_age_days))
-            return {"players": {"cached batter": {"name": "Cached Batter"}}} if key == "raw_batting-2025" else None
+        class FakeFrame:
+            def to_dict(self, orient="records"):
+                return [{"Name": "Cached Batter", "PA": 120, "K%": 0.20, "BB%": 0.08,
+                         "HBP": 2, "H": 30, "2B": 5, "3B": 1, "HR": 3, "IDfg": 1, "Team": "NY", "Bat": "R"}]
 
-        monkeypatch.setattr("mlb.data.stats.read_cache", fake_read_cache)
-        cached = __import__("mlb.data.stats", fromlist=["_load_cached_season_players"])._load_cached_season_players(
-            "batting_splits", "raw_batting", 2025, True
-        )
-        assert cached == {"cached batter": {"name": "Cached Batter"}}
-        assert calls[0] == ("batting_splits", "raw_batting-2025", None, 30)
+        scrape_count = {"n": 0}
+
+        def fake_batting_stats(season, **kwargs):
+            scrape_count["n"] += 1
+            return FakeFrame()
+
+        monkeypatch.setattr(stats_mod, "_import_pybaseball", lambda: (fake_batting_stats, None))
+        monkeypatch.setattr(stats_mod, "_season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
+
+        # First call — scrapes and writes cache
+        stats_mod._fetch_batting_season_raw(2025, fake_batting_stats, use_cache=True)
+        assert scrape_count["n"] == 1
+
+        # Second call — loads from cache, no new scrape
+        result = stats_mod._fetch_batting_season_raw(2025, fake_batting_stats, use_cache=True)
+        assert scrape_count["n"] == 1
+        assert "cached batter" in result
 
 
 class TestFetchPitchingSplits:
@@ -215,13 +226,11 @@ class TestFetchPitchingSplits:
             {"Name": "Fallback Pitcher", "IP": 90.0, "H": 70, "2B": 12, "3B": 1, "HR": 10, "BB": 25, "HBP": 2, "SO": 95, "IDfg": 2, "Team": "ABC", "Throws": "L"},
         ]
 
-        monkeypatch.setattr("mlb.data.stats._load_cached_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._write_cached_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._load_cached_season_players", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._write_cached_season_players", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
 
-        def fake_pitching_stats(season):
+        def fake_pitching_stats(season, **kwargs):
             return FakeFrame(rows_2026 if season == 2026 else rows_2025)
 
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (None, fake_pitching_stats))
@@ -233,9 +242,6 @@ class TestFetchPitchingSplits:
 
 class TestFetchTodaysGames:
     def test_schedule_parses_statsapi_flat_keys(self, monkeypatch):
-        monkeypatch.setattr("mlb.data.lineups.read_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.lineups.write_cache", lambda *args, **kwargs: None)
-
         class FakeStatsApi:
             @staticmethod
             def schedule(date=None):
@@ -376,3 +382,41 @@ class TestBuildGameContext:
         assert getattr(context.away_lineup.batting_order[-1], "data_source") == "league_avg"
         assert sum(context.away_lineup.batting_order[-1].rates.values()) == pytest.approx(1.0)
         assert any("Missing batting data for Away Batter 9" in record.message for record in caplog.records)
+
+
+class TestNormalizeName:
+    def test_strips_accents(self):
+        from mlb.data.stats import _normalize_name
+        assert _normalize_name("Agustín Ramírez") == _normalize_name("Agustin Ramirez")
+
+    def test_strips_accents_various(self):
+        from mlb.data.stats import _normalize_name
+        assert _normalize_name("José Caballero") == "jose caballero"
+        assert _normalize_name("Néstor Cortés") == "nestor cortes"
+
+    def test_strips_periods_from_initials(self):
+        from mlb.data.stats import _normalize_name
+        assert _normalize_name("J.C. Escarra") == _normalize_name("JC Escarra")
+
+    def test_strips_trailing_jr_suffix(self):
+        from mlb.data.stats import _normalize_name
+        assert _normalize_name("Ronald Acuna Jr.") == _normalize_name("Ronald Acuna")
+
+    def test_strips_trailing_sr_suffix(self):
+        from mlb.data.stats import _normalize_name
+        assert _normalize_name("Ken Griffey Sr") == _normalize_name("Ken Griffey")
+
+    def test_strips_trailing_iii_suffix(self):
+        from mlb.data.stats import _normalize_name
+        assert _normalize_name("Cal Ripken III") == _normalize_name("Cal Ripken")
+
+    def test_lowercases_and_collapses_whitespace(self):
+        from mlb.data.stats import _normalize_name
+        assert _normalize_name("  Aaron  Judge  ") == "aaron judge"
+
+    def test_builder_normalize_name_matches_stats(self):
+        from mlb.data.stats import _normalize_name as stats_norm
+        from mlb.data.builder import _normalize_name as builder_norm
+        assert stats_norm("Agustín Ramírez") == builder_norm("agustin ramirez")
+
+

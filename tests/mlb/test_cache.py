@@ -1,72 +1,105 @@
+import json
 import os
 import time
 
-from mlb.data.cache import get_cache_path, read_cache, write_cache
+import pytest
+
+from mlb.config import SEASON
+from mlb.data.stats import _load_raw_cache, _raw_cache_path, _save_raw_cache
 
 
-class TestGetCachePath:
-    def test_with_date(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        path = get_cache_path('stats', 'batting', date='2026-04-01')
-        assert path == tmp_path / 'stats' / '2026-04-01-batting.json'
-
-    def test_without_date(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        path = get_cache_path('stats', 'batting')
-        assert path == tmp_path / 'stats' / 'batting.json'
-
-    def test_nested_category(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        path = get_cache_path('players/splits', 'judge', date='2026-04-01')
-        assert path == tmp_path / 'players/splits' / '2026-04-01-judge.json'
+@pytest.fixture()
+def cache_dir(tmp_path, monkeypatch):
+    """Point CACHE_DIR at a temp directory for each test."""
+    import mlb.config as cfg
+    import mlb.data.stats as stats_mod
+    monkeypatch.setattr(cfg, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(stats_mod, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(stats_mod, "SEASON", SEASON)
+    return tmp_path
 
 
-class TestWriteCache:
-    def test_creates_directories(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        write_cache('deep/nested', 'file', {'x': 1})
-        assert (tmp_path / 'deep' / 'nested' / 'file.json').exists()
+class TestRawCachePath:
+    def test_flat_filename(self, cache_dir):
+        path = _raw_cache_path("batting", 2025)
+        assert path == cache_dir / "raw_batting-2025.json"
 
-    def test_returns_path(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        path = write_cache('test', 'data', {'a': 1}, date='2026-04-01')
-        assert path == tmp_path / 'test' / '2026-04-01-data.json'
+    def test_no_subdirectory(self, cache_dir):
+        path = _raw_cache_path("pitching", 2026)
+        assert path.parent == cache_dir
 
 
-class TestReadCache:
-    def test_round_trip(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        data = {'key': 'value', 'number': 42, 'nested': {'a': [1, 2]}}
-        write_cache('test', 'data', data, date='2026-04-01')
-        result = read_cache('test', 'data', date='2026-04-01')
-        assert result == data
+class TestSaveRawCache:
+    def test_writes_json_file(self, cache_dir):
+        players = {"aaron judge": {"name": "Aaron Judge", "pa": 600}}
+        _save_raw_cache("batting", 2025, players)
+        path = cache_dir / "raw_batting-2025.json"
+        assert path.exists()
+        data = json.loads(path.read_text())
+        assert data["players"] == players
 
-    def test_missing_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        result = read_cache('test', 'nonexistent')
+    def test_creates_cache_dir_if_missing(self, tmp_path, monkeypatch):
+        import mlb.data.stats as stats_mod
+        nested = tmp_path / "new_dir"
+        monkeypatch.setattr(stats_mod, "CACHE_DIR", nested)
+        _save_raw_cache("batting", 2025, {"p": {}})
+        assert (nested / "raw_batting-2025.json").exists()
+
+
+class TestLoadRawCache:
+    def test_returns_none_when_missing(self, cache_dir):
+        assert _load_raw_cache("batting", 2025) is None
+
+    def test_round_trip_prior_season(self, cache_dir, monkeypatch):
+        import mlb.data.stats as stats_mod
+        monkeypatch.setattr(stats_mod, "SEASON", 2026)
+        players = {"juan soto": {"name": "Juan Soto", "pa": 550}}
+        _save_raw_cache("batting", 2025, players)
+        result = _load_raw_cache("batting", 2025)
+        assert result == players
+
+    def test_prior_season_never_expires(self, cache_dir, monkeypatch):
+        import mlb.data.stats as stats_mod
+        monkeypatch.setattr(stats_mod, "SEASON", 2026)
+        players = {"old player": {"name": "Old Player", "pa": 400}}
+        _save_raw_cache("batting", 2025, players)
+        # Backdate file by 10 years
+        path = cache_dir / "raw_batting-2025.json"
+        old_time = time.time() - (86400 * 3650)
+        os.utime(path, (old_time, old_time))
+        result = _load_raw_cache("batting", 2025)
+        assert result == players
+
+    def test_current_season_fresh_cache_returned(self, cache_dir, monkeypatch):
+        import mlb.data.stats as stats_mod
+        monkeypatch.setattr(stats_mod, "SEASON", 2026)
+        players = {"new player": {"name": "New Player", "pa": 100}}
+        _save_raw_cache("batting", 2026, players)
+        result = _load_raw_cache("batting", 2026)
+        assert result == players
+
+    def test_current_season_stale_cache_returns_none(self, cache_dir, monkeypatch):
+        import mlb.data.stats as stats_mod
+        monkeypatch.setattr(stats_mod, "SEASON", 2026)
+        monkeypatch.setattr(stats_mod, "STATS_CACHE_MAX_AGE_HOURS", 6)
+        players = {"stale player": {"name": "Stale Player", "pa": 100}}
+        _save_raw_cache("batting", 2026, players)
+        # Backdate file by 8 hours (beyond the 6h TTL)
+        path = cache_dir / "raw_batting-2026.json"
+        old_time = time.time() - (3600 * 8)
+        os.utime(path, (old_time, old_time))
+        result = _load_raw_cache("batting", 2026)
         assert result is None
 
-    def test_expired_returns_none(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        write_cache('test', 'old', {'data': 1})
-        # Backdate the file modification time by 10 days
-        path = get_cache_path('test', 'old')
-        old_time = time.time() - (86400 * 10)
-        os.utime(path, (old_time, old_time))
-        result = read_cache('test', 'old', max_age_days=7)
-        assert result is None
-
-    def test_fresh_respects_max_age(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        write_cache('test', 'fresh', {'data': 1})
-        result = read_cache('test', 'fresh', max_age_days=7)
-        assert result == {'data': 1}
-
-    def test_no_max_age_ignores_staleness(self, tmp_path, monkeypatch):
-        monkeypatch.setattr('mlb.data.cache.CACHE_DIR', tmp_path)
-        write_cache('test', 'ancient', {'data': 1})
-        path = get_cache_path('test', 'ancient')
-        old_time = time.time() - (86400 * 365)  # 1 year old
-        os.utime(path, (old_time, old_time))
-        result = read_cache('test', 'ancient')  # no max_age_days
-        assert result == {'data': 1}
+    def test_current_season_within_ttl_returned(self, cache_dir, monkeypatch):
+        import mlb.data.stats as stats_mod
+        monkeypatch.setattr(stats_mod, "SEASON", 2026)
+        monkeypatch.setattr(stats_mod, "STATS_CACHE_MAX_AGE_HOURS", 6)
+        players = {"fresh player": {"name": "Fresh Player", "pa": 100}}
+        _save_raw_cache("batting", 2026, players)
+        # Backdate by only 2 hours (within the 6h TTL)
+        path = cache_dir / "raw_batting-2026.json"
+        recent_time = time.time() - (3600 * 2)
+        os.utime(path, (recent_time, recent_time))
+        result = _load_raw_cache("batting", 2026)
+        assert result == players

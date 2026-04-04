@@ -1,96 +1,79 @@
 """Player statistics fetch/build helpers for MLB simulation inputs."""
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
+import time
+import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from mlb.config import (
     CACHE_DIR,
-    DAILY_CACHE_TTL_DAYS,
     Hand,
     LEAGUE_AVERAGES,
     SEASON,
-    SEASONAL_CACHE_TTL_DAYS,
+    STATS_CACHE_MAX_AGE_HOURS,
 )
-from mlb.data.cache import read_cache, write_cache
 from mlb.data.models import BatterStats, PitcherStats
 
 logger = logging.getLogger(__name__)
 
-_BATTING_CACHE_KEY = "season_batting"
-_PITCHING_CACHE_KEY = "season_pitching"
 _MIN_BATTER_PA = 50
 _MIN_PITCHER_IP = 20.0
 _AVG_PITCHES_PER_INNING = 16.0
 _EARLY_SEASON_BATTER_PA = 20
 _EARLY_SEASON_PITCHER_IP = 10.0
 
-
-def _today_str() -> str:
-    return date.today().isoformat()
+_NAME_SUFFIX_RE = re.compile(r'\s+(jr|sr|ii|iii|iv)$')
 
 
 def _normalize_name(name: str) -> str:
-    return " ".join(str(name).strip().lower().split())
+    # Strip diacritical marks via NFD decomposition
+    nfkd = unicodedata.normalize('NFD', str(name))
+    stripped = ''.join(c for c in nfkd if not unicodedata.category(c).startswith('M'))
+    # Remove periods (turns "J.C." into "JC")
+    stripped = stripped.replace('.', '')
+    # Lowercase and collapse whitespace
+    stripped = ' '.join(stripped.strip().lower().split())
+    # Strip trailing name suffixes
+    stripped = _NAME_SUFFIX_RE.sub('', stripped)
+    return stripped
 
 
-def _cache_payload(players: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    return {"players": players}
+# ── Raw season stat cache (flat files, no subdirectories) ────────────────────
+
+def _raw_cache_path(kind: str, season: int) -> Path:
+    return CACHE_DIR / f"raw_{kind}-{season}.json"
 
 
-def _load_cached_players(category: str, key: str, use_cache: bool) -> dict[str, dict] | None:
-    if not use_cache:
+def _load_raw_cache(kind: str, season: int) -> dict[str, dict] | None:
+    path = _raw_cache_path(kind, season)
+    if not path.exists():
         return None
-    cached = read_cache(
-        category,
-        key,
-        date=_today_str(),
-        max_age_days=DAILY_CACHE_TTL_DAYS,
-    )
-    if cached:
-        players = cached.get("players", {})
-        if players:
-            return players
-        logger.warning("Discarding empty cached %s/%s payload", category, key)
-    return None
+    # Prior seasons never change; cache them forever.
+    # Current season: re-fetch if older than STATS_CACHE_MAX_AGE_HOURS.
+    if season >= SEASON:
+        age_hours = (time.time() - path.stat().st_mtime) / 3600
+        if age_hours > STATS_CACHE_MAX_AGE_HOURS:
+            logger.debug("Raw %s cache for %d is %.1fh old, re-fetching", kind, season, age_hours)
+            return None
+    with open(path) as f:
+        return json.load(f).get("players")
 
 
-def _write_cached_players(category: str, key: str, players: dict[str, dict]) -> None:
-    write_cache(category, key, _cache_payload(players), date=_today_str())
+def _save_raw_cache(kind: str, season: int, players: dict[str, dict]) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _raw_cache_path(kind, season)
+    with open(path, "w") as f:
+        json.dump({"players": players}, f, indent=2)
+    logger.debug("Raw cache written: %s (%d players)", path, len(players))
 
 
-def _load_cached_season_players(
-    category: str,
-    key: str,
-    season: int,
-    use_cache: bool,
-) -> dict[str, dict] | None:
-    if not use_cache:
-        return None
-    cached = read_cache(
-        category,
-        f"{key}-{season}",
-        max_age_days=SEASONAL_CACHE_TTL_DAYS,
-    )
-    if cached:
-        players = cached.get("players", {})
-        if players:
-            return players
-        logger.warning("Discarding empty cached %s/%s season payload", category, key)
-    return None
-
-
-def _write_cached_season_players(
-    category: str,
-    key: str,
-    season: int,
-    players: dict[str, dict],
-) -> None:
-    write_cache(category, f"{key}-{season}", _cache_payload(players))
-
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     if value is None:
@@ -313,16 +296,13 @@ def _build_pitcher_player(row: dict[str, Any], season: int, source: str) -> dict
     }
 
 
-def _fetch_batting_season_raw(
-    season: int,
-    batting_stats,
-    use_cache: bool,
-) -> dict[str, dict]:
-    cached = _load_cached_season_players("batting_splits", "raw_batting", season, use_cache)
-    if cached is not None:
-        return cached
+def _fetch_batting_season_raw(season: int, batting_stats, use_cache: bool) -> dict[str, dict]:
+    if use_cache:
+        cached = _load_raw_cache("batting", season)
+        if cached is not None:
+            return cached
 
-    records = _frame_to_records(batting_stats(season))
+    records = _frame_to_records(batting_stats(season, qual=1))
     players: dict[str, dict] = {}
     for row in records:
         player = _build_batter_player(row, season, source=str(season))
@@ -330,20 +310,17 @@ def _fetch_batting_season_raw(
             continue
         players[_normalize_name(player["name"])] = player
 
-    _write_cached_season_players("batting_splits", "raw_batting", season, players)
+    _save_raw_cache("batting", season, players)
     return players
 
 
-def _fetch_pitching_season_raw(
-    season: int,
-    pitching_stats,
-    use_cache: bool,
-) -> dict[str, dict]:
-    cached = _load_cached_season_players("pitching_splits", "raw_pitching", season, use_cache)
-    if cached is not None:
-        return cached
+def _fetch_pitching_season_raw(season: int, pitching_stats, use_cache: bool) -> dict[str, dict]:
+    if use_cache:
+        cached = _load_raw_cache("pitching", season)
+        if cached is not None:
+            return cached
 
-    records = _frame_to_records(pitching_stats(season))
+    records = _frame_to_records(pitching_stats(season, qual=1))
     players: dict[str, dict] = {}
     for row in records:
         player = _build_pitcher_player(row, season, source=str(season))
@@ -351,7 +328,7 @@ def _fetch_pitching_season_raw(
             continue
         players[_normalize_name(player["name"])] = player
 
-    _write_cached_season_players("pitching_splits", "raw_pitching", season, players)
+    _save_raw_cache("pitching", season, players)
     return players
 
 
@@ -361,10 +338,6 @@ def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[s
     v1 uses overall rates for all matchups. True handedness splits require
     individual split-page requests, which are too slow for this pass.
     """
-    cached = _load_cached_players("batting_splits", _BATTING_CACHE_KEY, use_cache)
-    if cached is not None:
-        return cached
-
     batting_stats, _ = _import_pybaseball()
     current_players = _fetch_batting_season_raw(season, batting_stats, use_cache)
     prior_players = _fetch_batting_season_raw(season - 1, batting_stats, use_cache)
@@ -379,17 +352,11 @@ def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[s
             players[name] = dict(current_player, source=str(season))
         elif prior_player:
             players[name] = dict(prior_player, source=str(season - 1))
-
-    _write_cached_players("batting_splits", _BATTING_CACHE_KEY, players)
     return players
 
 
 def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
     """Fetch season pitching stats and convert them to per-batter-faced rates."""
-    cached = _load_cached_players("pitching_splits", _PITCHING_CACHE_KEY, use_cache)
-    if cached is not None:
-        return cached
-
     _, pitching_stats = _import_pybaseball()
     current_players = _fetch_pitching_season_raw(season, pitching_stats, use_cache)
     prior_players = _fetch_pitching_season_raw(season - 1, pitching_stats, use_cache)
@@ -404,8 +371,6 @@ def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[
             players[name] = dict(current_player, source=str(season))
         elif prior_player:
             players[name] = dict(prior_player, source=str(season - 1))
-
-    _write_cached_players("pitching_splits", _PITCHING_CACHE_KEY, players)
     return players
 
 
