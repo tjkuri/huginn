@@ -1,7 +1,6 @@
 """Terminal formatting helpers for MLB simulation CLI output."""
 from __future__ import annotations
 
-import re
 from collections import Counter
 from typing import Any
 
@@ -375,24 +374,7 @@ def _build_quality_panel(game_context: GameContext, data_warnings: list[str]):
 
     lines: list[Text] = []
 
-    # Missing players parsed from builder warnings
-    missing_batters: list[str] = []
-    missing_pitchers: list[str] = []
-    for w in data_warnings:
-        match = re.search(r"(?:batting|pitching) data for (.+?)(?:;|$)", w, re.IGNORECASE)
-        if match:
-            name = match.group(1).strip()
-            if "batting" in w.lower():
-                missing_batters.append(name)
-            else:
-                missing_pitchers.append(name)
-    if missing_batters or missing_pitchers:
-        all_missing = [f"{n} (batting)" for n in missing_batters] + [f"{n} (pitching)" for n in missing_pitchers]
-        lines.append(Text("Missing players:", style="bright_yellow"))
-        for wrapped_line in _wrap_names(all_missing):
-            lines.append(Text(f"  {wrapped_line}", style="bright_yellow"))
-
-    # Source-based player stats for non-current-year players
+    # Source-based player stats — current year shown without names, fallbacks listed by name
     def add_source_group(
         grouped: dict[str, list[str]],
         source: str,
@@ -409,11 +391,18 @@ def _build_quality_panel(game_context: GameContext, data_warnings: list[str]):
         for wrapped_line in _wrap_names(names):
             lines.append(Text(f"  {wrapped_line}", style=style))
 
+    for source, label in (("2026", "batter"), ("2026", "pitcher")):
+        grouped = batter_sources if label == "batter" else pitcher_sources
+        names = grouped.get(source, [])
+        if names:
+            noun = label if len(names) == 1 else f"{label}s"
+            lines.append(Text(f"✓ {len(names)} {noun} using 2026 stats", style="green"))
     add_source_group(batter_sources, "2025", "batter", "2025 stats", "⚠", "yellow")
     add_source_group(batter_sources, "league_avg", "batter", "league-average fallback", "⚠", "bright_yellow")
     add_source_group(pitcher_sources, "2025", "pitcher", "2025 stats", "⚠", "yellow")
     add_source_group(pitcher_sources, "league_avg", "pitcher", "league-average fallback", "⚠", "bright_yellow")
 
+    lines.append(Text(f"✓ Park factors: {game_context.park_factors.venue_name}", style="green"))
     if default_weather:
         lines.append(Text("⚠ Weather: default placeholder (no real data)", style="yellow"))
 

@@ -55,7 +55,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def configure_logging(verbose: bool, json_mode: bool) -> None:
     """Configure logging to stderr based on output mode."""
-    level = logging.CRITICAL if json_mode else (logging.INFO if verbose else logging.WARNING)
+    level = logging.CRITICAL if json_mode else (logging.INFO if verbose else logging.ERROR)
     logging.basicConfig(level=level, stream=sys.stderr, format="%(levelname)s: %(message)s", force=True)
     root_logger = logging.getLogger()
     for handler in root_logger.handlers:

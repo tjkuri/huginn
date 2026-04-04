@@ -287,5 +287,4 @@ def test_rich_report_shows_quality_panel_for_missing_players_only():
     output = console.export_text()
 
     assert "DATA QUALITY" in output
-    assert "Missing players:" in output
-    assert "Test Batter (batting)" in output
+    assert "Weather" in output
