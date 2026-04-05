@@ -1,15 +1,21 @@
 import logging
 
+import pandas as pd
 import pytest
 
 from mlb.config import Hand
 from mlb.data.builder import build_game_context
-from mlb.data.models import GameContext
-from mlb.data.park_factors import get_park_factors, get_venue_for_team
+from mlb.data.models import GameContext, ParkFactors
+from mlb.data.park_factors import (
+    _convert_savant_index_to_multiplier,
+    get_park_factors,
+    get_venue_for_team,
+)
 from mlb.data.stats import (
     _batting_threshold_for_season,
     build_batter_stats,
     build_pitcher_stats,
+    compute_league_averages,
     fetch_batting_splits,
     fetch_pitching_splits,
 )
@@ -83,18 +89,71 @@ class TestBuildPitcherStats:
 
 
 class TestParkFactors:
-    def test_known_park(self):
+    def test_known_park(self, monkeypatch):
+        monkeypatch.setattr(
+            "mlb.data.park_factors.fetch_park_factors",
+            lambda season: {
+                "Coors Field": {
+                    "factors_vs_lhb": {"HR": 1.25, "2B": 1.20, "3B": 1.40, "1B": 1.10, "BB": 1.00, "K": 0.95},
+                    "factors_vs_rhb": {"HR": 1.30, "2B": 1.18, "3B": 1.35, "1B": 1.08, "BB": 1.00, "K": 0.94},
+                }
+            },
+        )
         park = get_park_factors("Coors Field")
         assert park.factors_vs_lhb["HR"] > 1.0
         assert park.factors_vs_rhb["HR"] > 1.0
 
-    def test_unknown_park(self):
+    def test_unknown_park(self, monkeypatch):
+        monkeypatch.setattr("mlb.data.park_factors.fetch_park_factors", lambda season: {})
         park = get_park_factors("Unknown Field")
         assert all(value == 1.0 for value in park.factors_vs_lhb.values())
         assert all(value == 1.0 for value in park.factors_vs_rhb.values())
 
     def test_team_to_venue_lookup(self):
         assert get_venue_for_team("Houston Astros") == "Daikin Park"
+
+    def test_savant_index_conversion(self):
+        assert _convert_savant_index_to_multiplier(115) == pytest.approx(1.15)
+
+    def test_fetch_park_factors_fallback(self, monkeypatch):
+        monkeypatch.setattr("mlb.data.park_factors._PARK_FACTOR_CACHE", {})
+        monkeypatch.setattr("mlb.data.park_factors._park_factor_cache_path", lambda season: __import__("pathlib").Path("/tmp/does-not-exist.json"))
+        monkeypatch.setattr("mlb.data.park_factors.requests.get", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        factors = __import__("mlb.data.park_factors", fromlist=["fetch_park_factors"]).fetch_park_factors(2025)
+        assert "Yankee Stadium" in factors
+        assert factors["Yankee Stadium"]["factors_vs_lhb"]["HR"] == pytest.approx(1.20)
+
+
+class TestLeagueAverageComputation:
+    def test_compute_league_averages_known_totals(self):
+        batting_df = pd.DataFrame(
+            [
+                {"PA": 100, "H": 30, "2B": 5, "3B": 1, "HR": 4, "HBP": 2, "SO": 20, "BB": 10},
+                {"PA": 50, "H": 10, "2B": 2, "3B": 0, "HR": 1, "HBP": 1, "SO": 15, "BB": 5},
+            ]
+        )
+        pitching_df = pd.DataFrame([{"IP": 10.0}])
+
+        rates = compute_league_averages(batting_df, pitching_df)
+
+        assert rates["K"] == pytest.approx(35 / 150)
+        assert rates["BB"] == pytest.approx(15 / 150)
+        assert rates["HR"] == pytest.approx(5 / 150)
+        assert rates["1B"] == pytest.approx((40 - 7 - 1 - 5) / 150)
+        assert rates["AVG"] == pytest.approx(40 / (150 - 15 - 3))
+
+    def test_compute_league_averages_sum_to_one(self):
+        batting_df = pd.DataFrame(
+            [
+                {"PA": 100, "H": 25, "2B": 5, "3B": 1, "HR": 4, "HBP": 2, "SO": 22, "BB": 8},
+            ]
+        )
+        pitching_df = pd.DataFrame([{"IP": 5.0}])
+
+        rates = compute_league_averages(batting_df, pitching_df)
+        total = sum(rates[key] for key in ("K", "BB", "HBP", "1B", "2B", "3B", "HR", "OUT"))
+        assert total == pytest.approx(1.0)
 
 
 class TestWeather:
@@ -320,6 +379,39 @@ class TestBuildGameContext:
         }
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: lineup)
+        monkeypatch.setattr(
+            "mlb.data.builder.fetch_team_bullpen_stats",
+            lambda season=2026: {
+                "": {
+                    "player_id": "away-bullpen",
+                    "name": "Away Team Bullpen",
+                    "throws": "R",
+                    "pa_against": 300,
+                    "rates": _raw_pitcher()["rates"],
+                    "avg_pitch_count": 120.0,
+                    "source": "2026",
+                },
+                "HOU": {
+                    "player_id": "hou-bullpen",
+                    "name": "Houston Astros Bullpen",
+                    "throws": "R",
+                    "pa_against": 300,
+                    "rates": _raw_pitcher()["rates"],
+                    "avg_pitch_count": 120.0,
+                    "source": "2026",
+                },
+            },
+        )
+        monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "HOU" if team_name == "Houston Astros" else "")
+        monkeypatch.setattr(
+            "mlb.data.builder.get_park_factors",
+            lambda venue_name: ParkFactors(
+                venue_id=venue_name,
+                venue_name=venue_name,
+                factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+            ),
+        )
 
         context = build_game_context(game_info, batting_data, pitching_data)
         assert isinstance(context, GameContext)
@@ -328,8 +420,10 @@ class TestBuildGameContext:
         assert context.away_lineup.starting_pitcher.name == "Away Starter"
         assert context.home_lineup.starting_pitcher.name == "Home Starter"
         assert all(getattr(batter, "data_source", None) in {None, "unknown"} or getattr(batter, "data_source") == "2026" for batter in context.away_lineup.batting_order)
-        assert len(context.away_lineup.bullpen) == 4
-        assert len(context.home_lineup.bullpen) == 4
+        assert len(context.away_lineup.bullpen) == 1
+        assert len(context.home_lineup.bullpen) == 1
+        assert context.away_lineup.bullpen[0].name == "Away Team Bullpen"
+        assert context.home_lineup.bullpen[0].name == "Houston Astros Bullpen"
         assert context.weather is not None
         assert context.weather.is_indoor is True
 
@@ -374,6 +468,17 @@ class TestBuildGameContext:
         }
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: lineup)
+        monkeypatch.setattr("mlb.data.builder.fetch_team_bullpen_stats", lambda season=2026: {})
+        monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "")
+        monkeypatch.setattr(
+            "mlb.data.builder.get_park_factors",
+            lambda venue_name: ParkFactors(
+                venue_id=venue_name,
+                venue_name=venue_name,
+                factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+            ),
+        )
 
         with caplog.at_level(logging.WARNING):
             context = build_game_context(game_info, batting_data, pitching_data)
@@ -382,6 +487,7 @@ class TestBuildGameContext:
         assert getattr(context.away_lineup.batting_order[-1], "data_source") == "league_avg"
         assert sum(context.away_lineup.batting_order[-1].rates.values()) == pytest.approx(1.0)
         assert any("Missing batting data for Away Batter 9" in record.message for record in caplog.records)
+        assert context.away_lineup.bullpen[0].name == "Away Team Bullpen"
 
 
 class TestNormalizeName:
@@ -418,5 +524,3 @@ class TestNormalizeName:
         from mlb.data.stats import _normalize_name as stats_norm
         from mlb.data.builder import _normalize_name as builder_norm
         assert stats_norm("Agustín Ramírez") == builder_norm("agustin ramirez")
-
-

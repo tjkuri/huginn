@@ -6,10 +6,15 @@ import re
 import unicodedata
 
 from mlb.config import Hand, LEAGUE_AVERAGES, SEASON
-from mlb.data.lineups import build_default_lineup_from_roster, fetch_game_lineup
+from mlb.data.lineups import build_default_lineup_from_roster, fetch_game_lineup, fetch_team_roster
 from mlb.data.models import BatterStats, GameContext, Lineup
 from mlb.data.park_factors import get_park_factors, get_venue_for_team
-from mlb.data.stats import build_batter_stats, build_pitcher_stats
+from mlb.data.stats import (
+    build_batter_stats,
+    build_pitcher_stats,
+    fangraphs_team_code,
+    fetch_team_bullpen_stats,
+)
 from mlb.data.weather import get_game_weather
 
 logger = logging.getLogger(__name__)
@@ -98,32 +103,47 @@ def _build_pitcher(player: dict | None, pitching_data: dict[str, dict]):
     return pitcher
 
 
-def _build_bullpen(team_name: str, throws: str) -> list:
-    hand = Hand.LEFT if str(throws).upper() == Hand.LEFT.value else Hand.RIGHT
-    bullpen = []
-    for idx in range(4):
-        reliever = build_pitcher_stats(
-            {
-                "player_id": f"{_normalize_name(team_name)}-rp-{idx + 1}",
-                "name": f"{team_name} RP{idx + 1}",
-                "throws": hand.value if idx % 2 == 0 else Hand.RIGHT.value,
-                "pa_against": 240,
-                "rates": dict(
-                    LEAGUE_AVERAGES[
-                        (Hand.RIGHT, Hand.LEFT) if (hand if idx % 2 == 0 else Hand.RIGHT) == Hand.LEFT
-                        else (Hand.LEFT, Hand.RIGHT)
-                    ]
-                ),
-                "avg_pitch_count": 28.0,
-            }
-        )
-        bullpen.append(reliever)
-    return bullpen
+def _build_bullpen(team_name: str) -> list:
+    team_code = fangraphs_team_code(team_name)
+    bullpen_data = fetch_team_bullpen_stats(season=SEASON).get(team_code)
+    if bullpen_data is None:
+        logger.warning("Missing bullpen data for %s; using league-average fallback", team_name)
+        bullpen_data = _league_average_pitcher(f"{team_name} Bullpen", "R")
+    else:
+        bullpen_data = dict(bullpen_data, name=f"{team_name} Bullpen")
+
+    bullpen = build_pitcher_stats(bullpen_data)
+    bullpen.player_id = str(bullpen_data.get("player_id") or f"{_normalize_name(team_name)}-bullpen")
+    bullpen.name = f"{team_name} Bullpen"
+    return [bullpen]
 
 
 def _resolve_lineup(game_info: dict) -> dict:
     lineup = fetch_game_lineup(int(game_info["game_id"]))
+
+    # Probable pitchers from the schedule API always take priority over the boxscore.
+    # The boxscore may list warm-up arms or last season's pitchers for pre-game entries.
+    away_probable = str(game_info.get("away_probable_pitcher") or "").strip()
+    home_probable = str(game_info.get("home_probable_pitcher") or "").strip()
+
     if lineup is not None:
+        if away_probable:
+            throws = (lineup.get("away_pitcher") or {}).get("throws", "R")
+            lineup = dict(lineup, away_pitcher={"name": away_probable, "id": "", "throws": throws})
+            logger.info("Using probable starter %r for %s", away_probable, game_info.get("away_team", "away"))
+        if home_probable:
+            throws = (lineup.get("home_pitcher") or {}).get("throws", "R")
+            lineup = dict(lineup, home_pitcher={"name": home_probable, "id": "", "throws": throws})
+            logger.info("Using probable starter %r for %s", home_probable, game_info.get("home_team", "home"))
+
+        # Enrich batter handedness from roster — boxscore_data does not carry batSide.
+        away_bats = {p["id"]: p["bats"] for p in fetch_team_roster(int(game_info["away_team_id"]))}
+        home_bats = {p["id"]: p["bats"] for p in fetch_team_roster(int(game_info["home_team_id"]))}
+        for b in lineup["away_batters"]:
+            b["bats"] = away_bats.get(b["id"], b.get("bats", "R"))
+        for b in lineup["home_batters"]:
+            b["bats"] = home_bats.get(b["id"], b.get("bats", "R"))
+
         return lineup
 
     away_batters, roster_away_pitcher = build_default_lineup_from_roster(
@@ -134,10 +154,6 @@ def _resolve_lineup(game_info: dict) -> dict:
         int(game_info["home_team_id"]),
         season=SEASON,
     )
-
-    # Prefer probable pitchers from the schedule; fall back to first roster arm only if missing.
-    away_probable = str(game_info.get("away_probable_pitcher") or "").strip()
-    home_probable = str(game_info.get("home_probable_pitcher") or "").strip()
 
     away_pitcher = (
         {"name": away_probable, "id": "", "throws": roster_away_pitcher.get("throws", "R")}
@@ -189,14 +205,14 @@ def build_game_context(
         team_name=str(game_info.get("away_team") or ""),
         batting_order=_build_batting_order(lineup_info["away_batters"], batting_data),
         starting_pitcher=_build_pitcher(lineup_info.get("away_pitcher"), pitching_data),
-        bullpen=_build_bullpen(str(game_info.get("away_team") or "Away Team"), lineup_info.get("away_pitcher", {}).get("throws", "R")),
+        bullpen=_build_bullpen(str(game_info.get("away_team") or "Away Team")),
     )
     home_lineup = Lineup(
         team_id=str(game_info.get("home_team_id") or ""),
         team_name=str(game_info.get("home_team") or ""),
         batting_order=_build_batting_order(lineup_info["home_batters"], batting_data),
         starting_pitcher=_build_pitcher(lineup_info.get("home_pitcher"), pitching_data),
-        bullpen=_build_bullpen(str(game_info.get("home_team") or "Home Team"), lineup_info.get("home_pitcher", {}).get("throws", "R")),
+        bullpen=_build_bullpen(str(game_info.get("home_team") or "Home Team")),
     )
 
     return GameContext(

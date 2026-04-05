@@ -45,7 +45,7 @@ def _make_lineup(
         team_id=team_id, team_name=f'Team {team_id}',
         batting_order=batters,
         starting_pitcher=_make_pitcher(starter_name),
-        bullpen=[_make_pitcher(f'{team_id}_R{i}') for i in range(3)],
+        bullpen=[_make_pitcher(f'{team_id}_Bullpen')],
     )
 
 

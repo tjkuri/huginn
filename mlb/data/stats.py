@@ -29,6 +29,40 @@ _EARLY_SEASON_BATTER_PA = 20
 _EARLY_SEASON_PITCHER_IP = 10.0
 
 _NAME_SUFFIX_RE = re.compile(r'\s+(jr|sr|ii|iii|iv)$')
+_TEAM_BULLPEN_CACHE: dict[tuple[int, bool], dict[str, dict[str, Any]]] = {}
+_COMPUTED_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[str, float]] = {}
+_TEAM_TO_FG_CODE = {
+    "Arizona Diamondbacks": "ARI",
+    "Athletics": "ATH",
+    "Atlanta Braves": "ATL",
+    "Baltimore Orioles": "BAL",
+    "Boston Red Sox": "BOS",
+    "Chicago Cubs": "CHC",
+    "Chicago White Sox": "CHW",
+    "Cincinnati Reds": "CIN",
+    "Cleveland Guardians": "CLE",
+    "Colorado Rockies": "COL",
+    "Detroit Tigers": "DET",
+    "Houston Astros": "HOU",
+    "Kansas City Royals": "KCR",
+    "Los Angeles Angels": "LAA",
+    "Los Angeles Dodgers": "LAD",
+    "Miami Marlins": "MIA",
+    "Milwaukee Brewers": "MIL",
+    "Minnesota Twins": "MIN",
+    "New York Mets": "NYM",
+    "New York Yankees": "NYY",
+    "Philadelphia Phillies": "PHI",
+    "Pittsburgh Pirates": "PIT",
+    "San Diego Padres": "SDP",
+    "San Francisco Giants": "SFG",
+    "Seattle Mariners": "SEA",
+    "St. Louis Cardinals": "STL",
+    "Tampa Bay Rays": "TBR",
+    "Texas Rangers": "TEX",
+    "Toronto Blue Jays": "TOR",
+    "Washington Nationals": "WSN",
+}
 
 
 def _normalize_name(name: str) -> str:
@@ -71,6 +105,31 @@ def _save_raw_cache(kind: str, season: int, players: dict[str, dict]) -> None:
     with open(path, "w") as f:
         json.dump({"players": players}, f, indent=2)
     logger.debug("Raw cache written: %s (%d players)", path, len(players))
+
+
+def _computed_cache_path(kind: str, season: int) -> Path:
+    return CACHE_DIR / f"computed_{kind}-{season}.json"
+
+
+def _load_computed_cache(kind: str, season: int) -> dict[str, Any] | None:
+    path = _computed_cache_path(kind, season)
+    if not path.exists():
+        return None
+    if season >= SEASON:
+        age_hours = (time.time() - path.stat().st_mtime) / 3600
+        if age_hours > STATS_CACHE_MAX_AGE_HOURS:
+            logger.debug("Computed %s cache for %d is %.1fh old, re-fetching", kind, season, age_hours)
+            return None
+    with open(path) as f:
+        return json.load(f)
+
+
+def _save_computed_cache(kind: str, season: int, payload: dict[str, Any]) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _computed_cache_path(kind, season)
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2)
+    logger.debug("Computed cache written: %s", path)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -169,6 +228,53 @@ def _frame_to_records(frame: Any) -> list[dict[str, Any]]:
     if hasattr(frame, "to_dict"):
         return frame.to_dict(orient="records")
     raise TypeError("Expected pandas DataFrame-like object with to_dict()")
+
+
+def compute_league_averages(batting_df: Any, pitching_df: Any) -> dict[str, float]:
+    """Compute overall league-average batting rates from raw leaderboard frames."""
+    del pitching_df
+    records = _frame_to_records(batting_df)
+    totals = {
+        "PA": 0.0,
+        "H": 0.0,
+        "2B": 0.0,
+        "3B": 0.0,
+        "HR": 0.0,
+        "HBP": 0.0,
+        "K": 0.0,
+        "BB": 0.0,
+    }
+    for row in records:
+        pa = _safe_float(_first_present(row, "PA"))
+        if pa <= 0:
+            continue
+        totals["PA"] += pa
+        totals["H"] += _safe_float(_first_present(row, "H"))
+        totals["2B"] += _safe_float(_first_present(row, "2B"))
+        totals["3B"] += _safe_float(_first_present(row, "3B"))
+        totals["HR"] += _safe_float(_first_present(row, "HR"))
+        totals["HBP"] += _safe_float(_first_present(row, "HBP"))
+        totals["K"] += _safe_float(_first_present(row, "SO", "K"), default=pa * _safe_float(_first_present(row, "K%", "SO%", "K_pct")))
+        totals["BB"] += _safe_float(_first_present(row, "BB"), default=pa * _safe_float(_first_present(row, "BB%", "BB_pct")))
+
+    total_pa = totals["PA"]
+    if total_pa <= 0:
+        raise ValueError("Unable to compute league averages from empty batting frame")
+
+    singles = max(0.0, totals["H"] - totals["2B"] - totals["3B"] - totals["HR"])
+    rates = {
+        "K": totals["K"] / total_pa,
+        "BB": totals["BB"] / total_pa,
+        "HBP": totals["HBP"] / total_pa,
+        "1B": singles / total_pa,
+        "2B": totals["2B"] / total_pa,
+        "3B": totals["3B"] / total_pa,
+        "HR": totals["HR"] / total_pa,
+    }
+    rates["OUT"] = max(0.0, 1.0 - sum(rates.values()))
+    ab = max(1.0, total_pa - totals["BB"] - totals["HBP"])
+    rates["AVG"] = totals["H"] / ab
+    return rates
 
 
 def _extract_batter_rates(row: dict[str, Any]) -> dict[str, float]:
@@ -296,6 +402,84 @@ def _build_pitcher_player(row: dict[str, Any], season: int, source: str) -> dict
     }
 
 
+def _is_reliever_row(row: dict[str, Any]) -> bool:
+    games = _safe_float(_first_present(row, "G", default=0.0))
+    games_started = _safe_float(_first_present(row, "GS", default=0.0))
+    if games <= 0:
+        return False
+    return games_started == 0 or (games_started / games) < 0.2
+
+
+def _aggregate_team_bullpen_records(records: list[dict[str, Any]], season: int) -> dict[str, dict[str, Any]]:
+    aggregates: dict[str, dict[str, Any]] = {}
+    for row in records:
+        team_code = str(_first_present(row, "Team", default="")).strip()
+        if not team_code or not _is_reliever_row(row):
+            continue
+
+        team = aggregates.setdefault(
+            team_code,
+            {
+                "ip": 0.0,
+                "pa_against": 0,
+                "H": 0.0,
+                "2B": 0.0,
+                "3B": 0.0,
+                "HR": 0.0,
+                "BB": 0.0,
+                "HBP": 0.0,
+                "SO": 0.0,
+            },
+        )
+        team["ip"] += _safe_float(_first_present(row, "IP"))
+        team["pa_against"] += _estimate_pitcher_pa(row)
+        team["H"] += _safe_float(_first_present(row, "H"))
+        team["2B"] += _safe_float(_first_present(row, "2B", "2B_Allowed"))
+        team["3B"] += _safe_float(_first_present(row, "3B", "3B_Allowed"))
+        team["HR"] += _safe_float(_first_present(row, "HR"))
+        team["BB"] += _safe_float(_first_present(row, "BB"))
+        team["HBP"] += _safe_float(_first_present(row, "HBP"))
+        team["SO"] += _safe_float(_first_present(row, "SO", "K"))
+
+    bullpen: dict[str, dict[str, Any]] = {}
+    for team_code, totals in aggregates.items():
+        pa_against = int(totals["pa_against"])
+        if pa_against <= 0:
+            continue
+        hits = totals["H"]
+        doubles = totals["2B"]
+        triples = totals["3B"]
+        hr = totals["HR"]
+        singles = max(0.0, hits - doubles - triples - hr)
+        rates = _normalize_rates(
+            {
+                "K": totals["SO"] / pa_against,
+                "BB": totals["BB"] / pa_against,
+                "HBP": totals["HBP"] / pa_against,
+                "1B": singles / pa_against,
+                "2B": doubles / pa_against,
+                "3B": triples / pa_against,
+                "HR": hr / pa_against,
+                "OUT": 0.0,
+            }
+        )
+        bullpen[team_code] = {
+            "player_id": f"{team_code.lower()}-bullpen",
+            "team": team_code,
+            "name": f"{team_code} Bullpen",
+            "throws": "R",
+            "ip": totals["ip"],
+            "pa_against": pa_against,
+            "rates": rates,
+            "avg_pitch_count": 120.0,
+            "season": season,
+            "source": str(season),
+            "split_type": "team_relief",
+            "notes": "Aggregate team bullpen using relievers only (GS == 0 or GS/G < 0.2).",
+        }
+    return bullpen
+
+
 def _fetch_batting_season_raw(season: int, batting_stats, use_cache: bool) -> dict[str, dict]:
     if use_cache:
         cached = _load_raw_cache("batting", season)
@@ -372,6 +556,48 @@ def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[
         elif prior_player:
             players[name] = dict(prior_player, source=str(season - 1))
     return players
+
+
+def fetch_computed_league_averages(season: int = SEASON, use_cache: bool = True) -> dict[str, float]:
+    """Fetch and cache overall league averages computed from raw pybaseball leaderboards."""
+    cache_key = (season, use_cache)
+    cached = _COMPUTED_LEAGUE_AVERAGE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if use_cache:
+        payload = _load_computed_cache("league_averages", season)
+        if payload is not None and "rates" in payload:
+            rates = dict(payload["rates"])
+            _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = rates
+            return rates
+
+    batting_stats, pitching_stats = _import_pybaseball()
+    batting_df = batting_stats(season, qual=1)
+    pitching_df = pitching_stats(season, qual=1)
+    rates = compute_league_averages(batting_df, pitching_df)
+    _save_computed_cache("league_averages", season, {"season": season, "rates": rates})
+    _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = rates
+    return rates
+
+
+def fetch_team_bullpen_stats(season: int = SEASON, use_cache: bool = True) -> dict[str, dict[str, Any]]:
+    """Fetch team-level bullpen aggregate rates from reliever rows only."""
+    cache_key = (season, use_cache)
+    cached = _TEAM_BULLPEN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    _, pitching_stats = _import_pybaseball()
+    records = _frame_to_records(pitching_stats(season, qual=1))
+    bullpen = _aggregate_team_bullpen_records(records, season)
+    _TEAM_BULLPEN_CACHE[cache_key] = bullpen
+    return bullpen
+
+
+def fangraphs_team_code(team_name: str) -> str:
+    """Map a full MLB team name to the Fangraphs team code used in stat rows."""
+    return _TEAM_TO_FG_CODE.get(team_name, "")
 
 
 def build_batter_stats(player_data: dict, hand: str) -> BatterStats:

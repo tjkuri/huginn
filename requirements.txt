@@ -1,6 +1,8 @@
 numpy
 scipy
 pandas
+requests
+beautifulsoup4
 rich
 pytest
 optuna

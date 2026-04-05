@@ -157,7 +157,10 @@ def fetch_game_lineup(game_id: int) -> dict | None:
 def fetch_team_roster(team_id: int, season: int = SEASON) -> list[dict]:
     """Fetch a team roster for one season. Always fetches fresh."""
     statsapi = _import_statsapi()
-    response = statsapi.get("team_roster", {"teamId": team_id, "season": season, "rosterType": "active"})
+    response = statsapi.get(
+        "team_roster",
+        {"teamId": team_id, "season": season, "rosterType": "active", "hydrate": "person"},
+    )
     roster_entries = response.get("roster", [])
     roster: list[dict] = []
     for entry in roster_entries:
@@ -169,8 +172,8 @@ def fetch_team_roster(team_id: int, season: int = SEASON) -> list[dict]:
                 "name": person.get("fullName") or "",
                 "position": position.get("abbreviation") or "",
                 "status": (entry.get("status") or {}).get("description") or "",
-                "bats": ((entry.get("batSide") or {}).get("code") or "R").upper(),
-                "throws": ((entry.get("pitchHand") or {}).get("code") or "R").upper(),
+                "bats": ((person.get("batSide") or {}).get("code") or "R").upper(),
+                "throws": ((person.get("pitchHand") or {}).get("code") or "R").upper(),
             }
         )
     return roster

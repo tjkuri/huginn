@@ -175,6 +175,10 @@ class TestGameState:
         assert gs.home_batting_index == 0
         assert gs.away_pitch_count == 0
         assert gs.home_pitch_count == 0
+        assert gs.away_pitcher_outs == 0
+        assert gs.home_pitcher_outs == 0
+        assert gs.away_pitcher_runs_allowed == 0
+        assert gs.home_pitcher_runs_allowed == 0
 
     def test_mutable(self):
         gs = GameState()

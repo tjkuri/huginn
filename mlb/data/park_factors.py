@@ -1,7 +1,19 @@
 """Park-factor lookup helpers for MLB simulation contexts."""
 from __future__ import annotations
 
+import json
+import logging
+import re
+from pathlib import Path
+from typing import Any
+
+import requests
+from bs4 import BeautifulSoup
+
+from mlb.config import CACHE_DIR, SEASON
 from mlb.data.models import ParkFactors
+
+logger = logging.getLogger(__name__)
 
 # Approximate 2025 park factors synthesized from FanGraphs Guts and Baseball
 # Savant park-factor references. These are deliberately coarse v1 multipliers
@@ -21,7 +33,6 @@ PARK_FACTORS = {
     "George M. Steinbrenner Field": {"factors_vs_lhb": {"HR": 1.03, "2B": 1.01, "3B": 0.95, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.01, "2B": 1.01, "3B": 0.95, "1B": 1.00, "BB": 1.00, "K": 1.00}},
     "Globe Life Field": {"factors_vs_lhb": {"HR": 0.98, "2B": 1.00, "3B": 0.91, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 0.99, "2B": 1.00, "3B": 0.91, "1B": 1.00, "BB": 1.00, "K": 1.00}},
     "Great American Ball Park": {"factors_vs_lhb": {"HR": 1.14, "2B": 0.98, "3B": 0.84, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.16, "2B": 0.99, "3B": 0.84, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Guaranteed Rate Field": {"factors_vs_lhb": {"HR": 1.08, "2B": 0.99, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.10, "2B": 1.00, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}},
     "Kauffman Stadium": {"factors_vs_lhb": {"HR": 0.90, "2B": 1.07, "3B": 1.18, "1B": 1.02, "BB": 1.00, "K": 0.99}, "factors_vs_rhb": {"HR": 0.89, "2B": 1.06, "3B": 1.16, "1B": 1.02, "BB": 1.00, "K": 0.99}},
     "loanDepot Park": {"factors_vs_lhb": {"HR": 0.92, "2B": 0.98, "3B": 0.92, "1B": 0.99, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 0.94, "2B": 0.99, "3B": 0.92, "1B": 0.99, "BB": 1.00, "K": 1.00}},
     "Nationals Park": {"factors_vs_lhb": {"HR": 1.01, "2B": 1.00, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.02, "2B": 1.00, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}},
@@ -75,16 +86,189 @@ TEAM_TO_VENUE = {
 }
 
 _NEUTRAL_FACTORS = {"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0}
+# Base URL returns combined ("All") factors; batSide=R/L returns handedness-specific factors.
+_SAVANT_URL = "https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year={season}"
+_SAVANT_URL_SIDE = "https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year={season}&batSide={bat_side}"
+_SAVANT_DATA_RE = re.compile(r"var data = (\[.*?\]);", re.DOTALL)
+_PARK_FACTOR_CACHE: dict[int, dict[str, dict[str, dict[str, float]]]] = {}
+
+
+def _park_factor_cache_path(season: int) -> Path:
+    return CACHE_DIR / f"park_factors-{season}.json"
+
+
+def _convert_savant_index_to_multiplier(value: Any) -> float:
+    return float(value) / 100.0
+
+
+def _fallback_park_factors() -> dict[str, dict[str, dict[str, float]]]:
+    return {
+        venue: {
+            "factors_vs_lhb": dict(factors["factors_vs_lhb"]),
+            "factors_vs_rhb": dict(factors["factors_vs_rhb"]),
+        }
+        for venue, factors in PARK_FACTORS.items()
+    }
+
+
+def _extract_data_rows(html: str) -> list[dict]:
+    """Extract the embedded `var data = [...]` array from a Savant HTML page."""
+    soup = BeautifulSoup(html, "html.parser")
+    match = _SAVANT_DATA_RE.search(soup.decode())
+    if not match:
+        raise ValueError("Could not locate embedded park factor data in Savant response")
+    return json.loads(match.group(1))
+
+
+def _rows_to_venue_factors(rows: list[dict]) -> dict[str, dict[str, float]]:
+    """Convert parsed data rows to a flat venue→factors mapping.
+
+    Accepts all rows regardless of key_bat_side (caller already filtered by URL).
+    When multiple rows share a venue, the last one wins.
+    """
+    factors: dict[str, dict[str, float]] = {}
+    for row in rows:
+        venue_name = str(row.get("venue_name") or "").strip()
+        if not venue_name:
+            continue
+        factors[venue_name] = {
+            "HR": _convert_savant_index_to_multiplier(row.get("index_hr", 100)),
+            "2B": _convert_savant_index_to_multiplier(row.get("index_2b", 100)),
+            "3B": _convert_savant_index_to_multiplier(row.get("index_3b", 100)),
+            "1B": _convert_savant_index_to_multiplier(row.get("index_1b", 100)),
+            "BB": _convert_savant_index_to_multiplier(row.get("index_bb", 100)),
+            "K": _convert_savant_index_to_multiplier(row.get("index_so", 100)),
+        }
+    if not factors:
+        raise ValueError("Parsed Savant response but found no park-factor rows")
+    return factors
+
+
+def _fetch_savant_side(season: int, bat_side: str) -> dict[str, dict[str, float]]:
+    """Fetch per-venue factors for one bat side (R or L) from Savant.
+
+    Raises on any network or parse failure.
+    """
+    url = _SAVANT_URL_SIDE.format(season=season, bat_side=bat_side)
+    response = requests.get(url, timeout=20)
+    response.raise_for_status()
+    rows = _extract_data_rows(response.text)
+    # The side-specific page may include rows for all bat sides in the embedded data;
+    # prefer rows that match the requested side, fall back to "All" rows.
+    target_rows = [r for r in rows if str(r.get("key_bat_side") or "") == bat_side]
+    if not target_rows:
+        # Savant may label them differently; accept whatever rows are present.
+        target_rows = rows
+    return _rows_to_venue_factors(target_rows)
+
+
+def _fetch_savant_combined(season: int) -> dict[str, dict[str, float]]:
+    """Fetch combined ("All" bat side) factors from Savant as a fallback."""
+    url = _SAVANT_URL.format(season=season)
+    response = requests.get(url, timeout=20)
+    response.raise_for_status()
+    rows = _extract_data_rows(response.text)
+    all_rows = [r for r in rows if str(r.get("key_bat_side", "All")) == "All"]
+    if not all_rows:
+        all_rows = rows
+    return _rows_to_venue_factors(all_rows)
+
+
+def fetch_park_factors(season: int) -> dict[str, dict[str, dict[str, float]]]:
+    """Fetch season park factors from Baseball Savant with handedness splits.
+
+    Makes separate requests for LHB (batSide=L) and RHB (batSide=R). If one
+    side fails, falls back to the combined ("All") data for that side. If all
+    Savant requests fail, falls back to the hardcoded PARK_FACTORS table.
+    Results are cached per season in baseball_cache/park_factors-{season}.json.
+    """
+    cached = _PARK_FACTOR_CACHE.get(season)
+    if cached is not None:
+        return cached
+
+    cache_path = _park_factor_cache_path(season)
+    if cache_path.exists():
+        with open(cache_path) as f:
+            cached_payload = json.load(f)
+        factors = cached_payload.get("factors") or {}
+        if factors:
+            source = str(cached_payload.get("source") or "cache")
+            if source == "savant":
+                logger.info("Park factors: loaded from cache (Baseball Savant %s)", season)
+            else:
+                logger.info("Park factors: loaded from cache (hardcoded fallback)")
+            _PARK_FACTOR_CACHE[season] = factors
+            return factors
+
+    try:
+        # Attempt handedness-split requests.
+        lhb_factors: dict[str, dict[str, float]] | None = None
+        rhb_factors: dict[str, dict[str, float]] | None = None
+        combined_factors: dict[str, dict[str, float]] | None = None
+
+        try:
+            lhb_factors = _fetch_savant_side(season, "L")
+        except Exception as exc:
+            logger.debug("Park factors: LHB request failed (%s); will use combined", exc)
+
+        try:
+            rhb_factors = _fetch_savant_side(season, "R")
+        except Exception as exc:
+            logger.debug("Park factors: RHB request failed (%s); will use combined", exc)
+
+        if lhb_factors is None or rhb_factors is None:
+            try:
+                combined_factors = _fetch_savant_combined(season)
+            except Exception as exc:
+                logger.debug("Park factors: combined request also failed (%s)", exc)
+            if lhb_factors is None:
+                lhb_factors = combined_factors or rhb_factors
+            if rhb_factors is None:
+                rhb_factors = combined_factors or lhb_factors
+
+        if lhb_factors is None or rhb_factors is None:
+            raise ValueError("All Savant park factor requests failed")
+
+        # Merge: union of all venue names seen across both sides.
+        all_venues = set(lhb_factors) | set(rhb_factors)
+        factors: dict[str, dict[str, dict[str, float]]] = {}
+        for venue in all_venues:
+            factors[venue] = {
+                "factors_vs_lhb": dict(lhb_factors.get(venue, rhb_factors.get(venue, _NEUTRAL_FACTORS))),
+                "factors_vs_rhb": dict(rhb_factors.get(venue, lhb_factors.get(venue, _NEUTRAL_FACTORS))),
+            }
+
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump({"season": season, "source": "savant", "factors": factors}, f, indent=2)
+        logger.info("Park factors: fetched from Baseball Savant (%s) with LHB/RHB splits", season)
+        _PARK_FACTOR_CACHE[season] = factors
+        return factors
+    except Exception:
+        logger.info("Park factors: all Savant requests failed; using hardcoded fallback")
+        fallback = _fallback_park_factors()
+        _PARK_FACTOR_CACHE[season] = fallback
+        return fallback
 
 
 def get_park_factors(venue_name: str) -> ParkFactors:
     """Return park-factor multipliers for the given venue."""
-    factors = PARK_FACTORS.get(venue_name)
+    factors = fetch_park_factors(SEASON).get(venue_name)
     if factors is None:
-        factors = {
-            "factors_vs_lhb": dict(_NEUTRAL_FACTORS),
-            "factors_vs_rhb": dict(_NEUTRAL_FACTORS),
-        }
+        # Savant data may be incomplete early in the season — fall back to hardcoded table.
+        hardcoded = PARK_FACTORS.get(venue_name)
+        if hardcoded is not None:
+            logger.debug("Park factors: %r not in Savant data; using hardcoded fallback", venue_name)
+            factors = {
+                "factors_vs_lhb": dict(hardcoded["factors_vs_lhb"]),
+                "factors_vs_rhb": dict(hardcoded["factors_vs_rhb"]),
+            }
+        else:
+            logger.warning("Park factors: unknown venue %r; using neutral factors", venue_name)
+            factors = {
+                "factors_vs_lhb": dict(_NEUTRAL_FACTORS),
+                "factors_vs_rhb": dict(_NEUTRAL_FACTORS),
+            }
 
     return ParkFactors(
         venue_id=venue_name or "unknown",
