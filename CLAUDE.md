@@ -112,10 +112,10 @@ Key files in the sibling repo for understanding the data:
 - **BaseState is frozen.** Each PA produces a new BaseState; never mutate in place.
 - **MLB runtime depends on numpy plus data packages.** The engine still avoids web/service dependencies, but the CLI/data layer uses `pybaseball` and `MLB-StatsAPI`.
 - **numpy RNG threading.** All randomness flows through `np.random.Generator` parameters — no global state. Enables reproducible simulations via seed.
-- **Approximate pitch counting.** 4 pitches per PA as a rough average for pitch count tracking.
+- **Outcome-based pitch counting.** Pitches per PA vary by outcome: K/BB=5, OUT=4, hits=3, HBP=2. Defined in `PITCHES_PER_OUTCOME` in `mlb/config.py`.
 - **Extra-inning ghost runner.** 10th+ inning half-innings start with `BaseState(second=True)` per MLB rules (2020+).
 - **Mercy rule at 15 innings.** Games capped to prevent infinite loops in edge cases.
-- **Bullpen in order.** Relievers used sequentially from `lineup.bullpen`. Handedness-based selection is a future enhancement.
+- **Single aggregate bullpen arm.** Each team's bullpen is one `PitcherStats` built from team-level relief aggregate stats (GS==0 or GS/G<0.2). Individual reliever selection is a future enhancement.
 - **No GIDP in v1.** Ground-ball double plays not modeled; runners hold on generic outs (except sac fly).
 - **MLB data layer uses external sources.** `pybaseball` provides season stats; `MLB-StatsAPI` provides schedules, lineups, and rosters.
 - **Lazy imports protect tests.** Data fetch modules import external packages only when fetch functions are called, so mocked tests run without live network usage.
@@ -140,7 +140,11 @@ Key files in the sibling repo for understanding the data:
 - **Stats load errors propagate.** `load_schedule_and_stats` in the CLI does not swallow fetch exceptions — if pybaseball or MLB-StatsAPI fails, the error surfaces rather than silently producing all-league-average output.
 - **PitcherSimStats extends PlayerSimStats for prop markets.** `aggregate.py` tracks pitcher outs/K/ER per simulation and computes IP, 5+K%, and QS% alongside the base fields. The formatter uses these directly; do not recompute from raw `pa_results`.
 - **Pitcher display uses prop-market columns.** The player projections panel shows IP, K, 5+K%, ER, QS% — not rate stats like K/9 or ERA. This matches how sportsbooks present pitcher props.
-- **Probable pitchers preferred over roster fallback.** `fetch_todays_games()` captures `away_probable_pitcher` / `home_probable_pitcher` from the schedule API. `_resolve_lineup()` uses these names when the boxscore lineup is not yet confirmed; it only falls back to the first roster arm when the probable field is empty.
+- **Probable pitchers always override boxscore.** `fetch_todays_games()` captures `away_probable_pitcher` / `home_probable_pitcher` from the schedule API. `_resolve_lineup()` injects these into the lineup regardless of what the boxscore pitcher field says — the boxscore pre-game pitcher entries are unreliable (may list warmup/administrative arms, not the actual starter). Falls back to first roster arm only when the probable field is empty and there is no boxscore.
+- **Dynamic league averages are diagnostic, not simulation inputs.** `fetch_computed_league_averages()` in `stats.py` computes overall league rates from the pybaseball batting leaderboard (PA-weighted aggregation of count stats) and caches to `computed_league_averages-{season}.json`. It is logged in `--verbose` mode as a sanity check. The simulation still uses the hardcoded `LEAGUE_AVERAGES` from `config.py`.
+- **Park factors: Savant → hardcoded → neutral fallback chain.** `fetch_park_factors(season)` makes two requests to Baseball Savant (`batSide=L` and `batSide=R`) to get handedness-specific park factors, then caches both sides together in `park_factors-{season}.json`. If one side request fails, falls back to the combined ("All") endpoint for that side. If all Savant requests fail, falls back to the hardcoded `PARK_FACTORS` table. Early in a season, Savant only has data for venues used so far; `get_park_factors(venue)` checks the hardcoded table before returning neutral 1.0. Venue name mismatches (e.g., "UNIQLO Field at Dodger Stadium" vs "Dodger Stadium") also trigger the hardcoded fallback.
+- **`requests` and `beautifulsoup4` are top-level imports in `park_factors.py`.** Unlike pybaseball, these are not lazy-imported. Both are listed in `requirements.txt` and are expected to be installed.
+- **Roster handedness comes from `person` hydration, not entry level.** `fetch_team_roster` requests `hydrate=person` so `batSide` and `pitchHand` are under `person`, not under the roster entry directly. The old entry-level lookup always returned `None` → defaulted to "R".
 
 ## MLB Caching
 
@@ -148,18 +152,21 @@ Only slow pybaseball scrapes are cached. Schedule, lineup, and roster data is al
 
 ```
 baseball_cache/
-  raw_batting-2025.json    ← prior season, kept forever (historical data never changes)
-  raw_pitching-2025.json   ← prior season, kept forever
-  raw_batting-2026.json    ← current season, re-fetched if older than 6 hours
-  raw_pitching-2026.json   ← current season, re-fetched if older than 6 hours
-  pybaseball/              ← pybaseball's own HTTP/DataFrame cache
+  raw_batting-2025.json           ← prior season, kept forever (historical data never changes)
+  raw_pitching-2025.json          ← prior season, kept forever
+  raw_batting-2026.json           ← current season, re-fetched if older than 6 hours
+  raw_pitching-2026.json          ← current season, re-fetched if older than 6 hours
+  computed_league_averages-2026.json  ← PA-weighted overall rates, same TTL as current-season stats
+  park_factors-2025.json          ← Baseball Savant park factors for prior season, kept forever
+  park_factors-2026.json          ← current season Savant park factors, no TTL (delete to refresh)
+  pybaseball/                     ← pybaseball's own HTTP/DataFrame cache
 ```
 
-**TTL logic:** `STATS_CACHE_MAX_AGE_HOURS = 6` in `mlb/config.py`. Files for seasons prior to `SEASON` never expire. Only the two current-season files are age-checked.
+**TTL logic:** `STATS_CACHE_MAX_AGE_HOURS = 6` in `mlb/config.py`. Files for seasons prior to `SEASON` never expire. Only the two current-season raw stat files are age-checked. Park factor cache files have no TTL — delete to force a fresh Savant fetch.
 
 **No merged/intermediate cache.** `fetch_batting_splits` and `fetch_pitching_splits` merge current + prior season data on every call (takes milliseconds). The raw files are the only persistence layer.
 
-**Cache invalidation:** Delete any of the four files to force a fresh scrape on next run. Delete `baseball_cache/pybaseball/` to force pybaseball to re-download from FanGraphs.
+**Cache invalidation:** Delete any of the raw stat files to force a fresh pybaseball scrape. Delete `park_factors-{season}.json` to force a fresh Savant fetch. Delete `baseball_cache/pybaseball/` to force pybaseball to re-download from FanGraphs.
 
 ## Future Work
 
