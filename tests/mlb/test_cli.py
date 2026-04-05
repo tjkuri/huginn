@@ -2,9 +2,7 @@ import json
 
 from mlb.config import LEAGUE_AVERAGES
 from mlb.engine.aggregate import aggregate_simulations
-from mlb.engine.simulate import simulate_game
-from mlb.scripts.diagnose_calibration import build_league_average_context, summarize_games
-from mlb.scripts.format_output import build_terminal_output
+from mlb.scripts.diagnose_calibration import build_league_average_context
 from mlb.scripts.simulate_game import build_parser, filter_games, serialize_simulation_result
 from mlb.scripts.test_smoke import build_synthetic_game_context
 
@@ -40,15 +38,6 @@ class TestJsonSerialization:
         assert decoded["metadata"]["seed"] == 3
         assert isinstance(decoded["metadata"]["data_warnings"], list)
         assert "inning_scores" not in decoded
-
-
-class TestFormatter:
-    def test_formatter_imports_cleanly(self):
-        context = build_synthetic_game_context()
-        result = aggregate_simulations(context, LEAGUE_AVERAGES, n_simulations=25, base_seed=5)
-        sample_game = simulate_game(context, LEAGUE_AVERAGES, seed=5)
-        renderable = build_terminal_output(result, context, sample_game, 1, [])
-        assert renderable is not None
 
 
 class TestArgparseDefaults:

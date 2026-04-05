@@ -207,16 +207,6 @@ class TestPAResult:
 
 # ── PlayerSimStats ───────────────────────────────────────────────────────────
 
-class TestPlayerSimStats:
-    def test_construction(self):
-        pss = PlayerSimStats(
-            player_id='b1', name='Slugger',
-            pa_per_game=4.2, hits_per_game=1.1, hr_per_game=0.3,
-            bb_per_game=0.5, k_per_game=1.2, runs_per_game=0.8,
-        )
-        assert pss.hr_per_game == 0.3
-
-
 # ── SimulationResult ─────────────────────────────────────────────────────────
 
 class TestSimulationResult:

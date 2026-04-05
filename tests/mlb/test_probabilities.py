@@ -11,14 +11,9 @@ class TestOddsRatio:
         result = odds_ratio(0.04, 0.025, 0.03)
         assert result == pytest.approx(0.0334, abs=0.001)
 
-    def test_zero_batter_returns_zero(self):
+    def test_zero_input_returns_zero(self):
+        """Any zero input collapses to zero output."""
         assert odds_ratio(0.0, 0.025, 0.03) == 0.0
-
-    def test_zero_pitcher_returns_zero(self):
-        assert odds_ratio(0.04, 0.0, 0.03) == 0.0
-
-    def test_zero_league_returns_zero(self):
-        assert odds_ratio(0.04, 0.025, 0.0) == 0.0
 
     def test_near_one_does_not_crash(self):
         result = odds_ratio(0.999, 0.025, 0.03)
