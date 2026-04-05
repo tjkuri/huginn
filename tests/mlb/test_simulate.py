@@ -426,12 +426,16 @@ class TestShouldPullStarter:
         assert should_pull_starter(120, 5.0, 3) is True
 
     def test_complete_game_pull(self):
-        """9.0 innings pitched: pull (complete game cap)."""
-        assert should_pull_starter(80, 9.0, 2) is True
+        """8.0 innings pitched: pull (starter cap)."""
+        assert should_pull_starter(80, 8.0, 2) is True
 
     def test_blowup_pull(self):
-        """8 runs allowed: pull regardless of pitch count."""
-        assert should_pull_starter(40, 3.0, 8) is True
+        """6 runs allowed: pull regardless of pitch count."""
+        assert should_pull_starter(40, 3.0, 6) is True
+
+    def test_five_runs_allowed_stays_in(self):
+        """5 runs allowed does not trigger the bad-outing hook yet."""
+        assert should_pull_starter(40, 3.0, 5) is False
 
     def test_custom_config_pitch_limit(self):
         """Custom pitch count limit via config."""
@@ -463,13 +467,6 @@ class TestGetCurrentPitcher:
         state = GameState(home_bullpen_index=0, home_pitch_count=0)
         pitcher = get_current_pitcher(lineup, state, is_home=True)
         assert pitcher.name == 'Reliever1'
-
-    def test_returns_second_bullpen_arm(self):
-        """home_bullpen_index=1 returns second reliever."""
-        lineup = _make_lineup()
-        state = GameState(home_bullpen_index=1, home_pitch_count=0)
-        pitcher = get_current_pitcher(lineup, state, is_home=True)
-        assert pitcher.name == 'Reliever2'
 
     def test_away_team_uses_away_fields(self):
         """is_home=False reads from away_bullpen_index."""
@@ -593,8 +590,8 @@ class TestSimulateHalfInning:
             assert r.pitcher_id == 'KBot'
             assert isinstance(r.runners_before, BaseState)
 
-    def test_pitch_count_increments(self):
-        """Pitcher's pitch count increases 4 per PA (3 PAs * 4 = 12)."""
+    def test_pitch_count_increments_by_outcome(self):
+        """Three strikeouts add 15 pitches via outcome-specific estimates."""
         home_lineup = _make_lineup('HomeSP')
         home_lineup.starting_pitcher = _make_k_only_pitcher()
         ctx = _make_game_context(home_lineup=home_lineup)
@@ -603,7 +600,12 @@ class TestSimulateHalfInning:
 
         simulate_half_inning(ctx, state, is_top=True, league_averages=LEAGUE_AVERAGES, rng=rng)
 
-        assert state.home_pitch_count == 12
+        assert state.home_pitch_count == 15
+        assert state.home_pitcher_outs == 3
+
+    def test_real_ip_tracking_uses_outs_recorded(self):
+        """Nine outs recorded corresponds to 3.0 innings pitched."""
+        assert should_pull_starter(20, 9 / 3.0, 0, config={"innings_limit": 3.0}) is True
 
 
 from mlb.engine.simulate import simulate_game

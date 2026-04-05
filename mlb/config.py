@@ -35,6 +35,16 @@ class WindDirection(str, Enum):
 # ── Outcome categories (ordered) ────────────────────────────────────────────
 
 OUTCOMES = [o.value for o in Outcome]
+PITCHES_PER_OUTCOME = {
+    Outcome.K: 5,
+    Outcome.BB: 5,
+    Outcome.HBP: 2,
+    Outcome.OUT: 4,
+    Outcome.SINGLE: 3,
+    Outcome.DOUBLE: 3,
+    Outcome.TRIPLE: 3,
+    Outcome.HR: 3,
+}
 
 
 # ── Season & simulation defaults ─────────────────────────────────────────────
@@ -56,7 +66,9 @@ STATS_CACHE_MAX_AGE_HOURS = 6
 # ── League average PA outcome rates (2025 approx) ───────────────────────────
 # Keys: (batter_hand, pitcher_hand) → outcome rates
 # These are baselines for the Odds Ratio method.
-# Will be updated once 2026 data stabilizes.
+# They remain the matchup engine inputs until true handedness-split league
+# averages are available from a stronger source. Validate them periodically
+# against the computed overall league average derived from pybaseball.
 
 LEAGUE_AVERAGES = {
     (Hand.LEFT, Hand.RIGHT): {   # LHB vs RHP (platoon advantage)

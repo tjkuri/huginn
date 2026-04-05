@@ -5,9 +5,10 @@ plate appearance. Manages innings, outs, baserunners, batting order,
 and pitcher substitutions. All randomness flows through an explicit
 numpy.random.Generator for reproducibility.
 """
+
 import numpy as np
 
-from mlb.config import Outcome, OUTCOMES, DEFAULT_PITCH_COUNT_LIMIT
+from mlb.config import DEFAULT_PITCH_COUNT_LIMIT, OUTCOMES, Outcome, PITCHES_PER_OUTCOME
 from mlb.data.models import (
     BaseState,
     BatterStats,
@@ -196,8 +197,8 @@ def should_pull_starter(
     """
     cfg = config or {}
     pitch_limit = cfg.get('pitch_count_limit', DEFAULT_PITCH_COUNT_LIMIT)
-    innings_limit = cfg.get('innings_limit', 9.0)
-    runs_limit = cfg.get('runs_limit', 8)
+    innings_limit = cfg.get('innings_limit', 8.0)
+    runs_limit = cfg.get('runs_limit', 6)
 
     if pitch_count >= pitch_limit:
         return True
@@ -233,10 +234,6 @@ def get_current_pitcher(
     # Clamp to last available arm if bullpen exhausted
     idx = min(bullpen_idx, len(lineup.bullpen) - 1)
     return lineup.bullpen[idx]
-
-
-# Approximate pitches per PA for pitch count tracking
-_PITCHES_PER_PA = 4
 
 
 def simulate_half_inning(
@@ -281,23 +278,27 @@ def simulate_half_inning(
             pitch_count = game_state.away_pitch_count
             bullpen_idx = game_state.away_bullpen_index
 
-        # Approximate innings pitched from pitch count
-        innings_pitched = pitch_count / (_PITCHES_PER_PA * 3)
+        pitcher_outs = game_state.home_pitcher_outs if is_defense_home else game_state.away_pitcher_outs
+        innings_pitched = pitcher_outs / 3.0
 
-        # Track runs allowed (runs scored by the batting team so far)
-        if is_defense_home:
-            runs_allowed = game_state.away_score
-        else:
-            runs_allowed = game_state.home_score
+        runs_allowed = (
+            game_state.home_pitcher_runs_allowed if is_defense_home else game_state.away_pitcher_runs_allowed
+        )
 
         # Check if starter should be pulled
         if bullpen_idx < 0 and should_pull_starter(pitch_count, innings_pitched, runs_allowed):
             if is_defense_home:
                 game_state.home_bullpen_index = 0
                 game_state.home_pitch_count = 0
+                game_state.home_pitcher_outs = 0
+                game_state.home_pitcher_runs_allowed = 0
+                bullpen_idx = game_state.home_bullpen_index
             else:
                 game_state.away_bullpen_index = 0
                 game_state.away_pitch_count = 0
+                game_state.away_pitcher_outs = 0
+                game_state.away_pitcher_runs_allowed = 0
+                bullpen_idx = game_state.away_bullpen_index
 
         pitcher = get_current_pitcher(defensive_lineup, game_state, is_home=is_defense_home)
 
@@ -337,10 +338,17 @@ def simulate_half_inning(
             game_state.home_batting_index = (batter_idx + 1) % 9
 
         # Increment pitch count for defensive pitcher
+        pitches_used = PITCHES_PER_OUTCOME[outcome]
         if is_defense_home:
-            game_state.home_pitch_count += _PITCHES_PER_PA
+            game_state.home_pitch_count += pitches_used
+            game_state.home_pitcher_runs_allowed += runs_scored
+            if outcome in {Outcome.K, Outcome.OUT}:
+                game_state.home_pitcher_outs += 1
         else:
-            game_state.away_pitch_count += _PITCHES_PER_PA
+            game_state.away_pitch_count += pitches_used
+            game_state.away_pitcher_runs_allowed += runs_scored
+            if outcome in {Outcome.K, Outcome.OUT}:
+                game_state.away_pitcher_outs += 1
 
         # Walk-off check: bottom of 9th+, home leads → end immediately
         if not is_top and game_state.inning >= 9 and game_state.home_score > game_state.away_score:
