@@ -49,14 +49,14 @@ def build_synthetic_game_context() -> GameContext:
         team_name="Synthetic Away",
         batting_order=[_batter(f"a{i}", f"Away Batter {i}", Hand.RIGHT) for i in range(1, 10)],
         starting_pitcher=_pitcher("ap", "Away Starter", Hand.RIGHT, 92.0),
-        bullpen=[_pitcher(f"arp{i}", f"Away RP{i}", Hand.RIGHT, 26.0) for i in range(1, 5)],
+        bullpen=[_pitcher("abp", "Synthetic Away Bullpen", Hand.RIGHT, 120.0)],
     )
     home_lineup = Lineup(
         team_id="home",
         team_name="Synthetic Home",
         batting_order=[_batter(f"h{i}", f"Home Batter {i}", Hand.LEFT) for i in range(1, 10)],
         starting_pitcher=_pitcher("hp", "Home Starter", Hand.LEFT, 94.0),
-        bullpen=[_pitcher(f"hrp{i}", f"Home RP{i}", Hand.LEFT if i % 2 else Hand.RIGHT, 26.0) for i in range(1, 5)],
+        bullpen=[_pitcher("hbp", "Synthetic Home Bullpen", Hand.RIGHT, 120.0)],
     )
     return GameContext(
         game_id="smoke-game",

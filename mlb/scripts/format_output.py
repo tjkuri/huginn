@@ -253,6 +253,30 @@ def _starter_rows(game_context: GameContext, result: SimulationResult) -> list[d
     return rows
 
 
+def _bullpen_rows(game_context: GameContext, result: SimulationResult) -> list[dict[str, str]]:
+    bullpens = []
+    if game_context.away_lineup.bullpen:
+        bullpens.append(game_context.away_lineup.bullpen[0])
+    if game_context.home_lineup.bullpen:
+        bullpens.append(game_context.home_lineup.bullpen[0])
+
+    rows = []
+    for bullpen in bullpens:
+        stats = result.player_stats.get(bullpen.player_id)
+        if stats is None:
+            rows.append({"name": bullpen.name, "ip": "--", "k": "--", "er": "--"})
+            continue
+        rows.append(
+            {
+                "name": bullpen.name,
+                "ip": f"{getattr(stats, 'innings_pitched_per_game', 0.0):.1f}",
+                "k": f"{stats.k_per_game:.1f}",
+                "er": f"{stats.runs_per_game:.1f}",
+            }
+        )
+    return rows
+
+
 def _build_plain_report(
     result: SimulationResult,
     game_context: GameContext,
@@ -285,6 +309,11 @@ def _build_plain_report(
         lines.append(
             f"{row['name']}: IP {row['ip']} K {row['k']} 5+K% {row['five_plus_k']} ER {row['er']} QS% {row['qs_pct']}"
         )
+    bullpen_rows = _bullpen_rows(game_context, result)
+    if bullpen_rows:
+        lines.append("Bullpen:")
+        for row in bullpen_rows:
+            lines.append(f"{row['name']}: IP {row['ip']} K {row['k']} ER {row['er']}")
     return "\n".join(lines)
 
 
@@ -475,6 +504,34 @@ def _build_pitcher_block(rows: list[dict[str, str]]):
     return Group(*lines)
 
 
+def _build_bullpen_block(rows: list[dict[str, str]]):
+    lines: list[Text] = [
+        _center_line("Bullpen"),
+        _column_line(
+            [
+                ("Team", 32, "left"),
+                ("IP", 6, "right"),
+                ("K", 6, "right"),
+                ("ER", 6, "right"),
+            ],
+            style="bold",
+        ),
+    ]
+    for row in rows:
+        lines.append(
+            _column_line(
+                [
+                    ("", 32, "left"),
+                    (row["ip"], 6, "right"),
+                    (row["k"], 6, "right"),
+                    (row["er"], 6, "right"),
+                ],
+                dot_leader_name=row["name"],
+            )
+        )
+    return Group(*lines)
+
+
 def build_terminal_output(
     result: SimulationResult,
     game_context: GameContext,
@@ -505,15 +562,19 @@ def build_terminal_output(
     away_rows = _batter_rate_rows(game_context, result, all_games, is_home=False)
     home_rows = _batter_rate_rows(game_context, result, all_games, is_home=True)
     pitcher_rows = _starter_rows(game_context, result)
+    bullpen_rows = _bullpen_rows(game_context, result)
+    player_blocks: list[Any] = [
+        _build_batter_block(result.away_team, away_rows),
+        Text(""),
+        _build_batter_block(result.home_team, home_rows),
+        Text(""),
+        _build_pitcher_block(pitcher_rows),
+    ]
+    if bullpen_rows:
+        player_blocks.extend([Text(""), _build_bullpen_block(bullpen_rows)])
     sections.append(
         Panel(
-            Group(
-                _build_batter_block(result.away_team, away_rows),
-                Text(""),
-                _build_batter_block(result.home_team, home_rows),
-                Text(""),
-                _build_pitcher_block(pitcher_rows),
-            ),
+            Group(*player_blocks),
             title=f"PLAYER PROJECTIONS (matchup-adjusted, {result.n_simulations:,} sims)",
             border_style="magenta",
         )

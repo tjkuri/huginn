@@ -39,6 +39,17 @@ def _pitcher(player_id: str, name: str) -> PitcherStats:
     )
 
 
+def _bullpen(player_id: str, name: str) -> PitcherStats:
+    return PitcherStats(
+        player_id=player_id,
+        name=name,
+        throws=Hand.RIGHT,
+        pa_against=300,
+        rates={"K": 0.24, "BB": 0.09, "HBP": 0.0, "1B": 0.14, "2B": 0.05, "3B": 0.01, "HR": 0.03, "OUT": 0.44},
+        avg_pitch_count=120.0,
+    )
+
+
 def _pa(outcome: Outcome, batter_id: str, pitcher_id: str, runs_scored: int = 0) -> PAResult:
     return PAResult(
         outcome=outcome,
@@ -63,14 +74,14 @@ def test_plain_report_uses_prop_market_projection_columns():
             team_name="Synthetic Away",
             batting_order=[away_batter] + [_batter(f"ab{i}", f"Away Batter {i}") for i in range(2, 10)],
             starting_pitcher=away_pitcher,
-            bullpen=[],
+            bullpen=[_bullpen("abp", "Synthetic Away Bullpen")],
         ),
         home_lineup=Lineup(
             team_id="home",
             team_name="Synthetic Home",
             batting_order=[home_batter] + [_batter(f"hb{i}", f"Home Batter {i}") for i in range(2, 10)],
             starting_pitcher=home_pitcher,
-            bullpen=[],
+            bullpen=[_bullpen("hbp", "Synthetic Home Bullpen")],
         ),
         park_factors=ParkFactors(
             venue_id="v1",
@@ -132,6 +143,7 @@ def test_plain_report_uses_prop_market_projection_columns():
     assert "TB " in report
     assert " SLG " not in report
     assert "Starting pitchers:" in report
+    assert "Bullpen:" in report
     assert "5+K%" in report
     assert "QS%" in report
     assert "K/9" not in report
@@ -151,14 +163,14 @@ def test_rich_report_hides_quality_panel_when_there_are_no_warnings():
             team_name="Synthetic Away",
             batting_order=[away_batter] + [_batter(f"ab{i}", f"Away Batter {i}") for i in range(2, 10)],
             starting_pitcher=away_pitcher,
-            bullpen=[],
+            bullpen=[_bullpen("abp", "Synthetic Away Bullpen")],
         ),
         home_lineup=Lineup(
             team_id="home",
             team_name="Synthetic Home",
             batting_order=[home_batter] + [_batter(f"hb{i}", f"Home Batter {i}") for i in range(2, 10)],
             starting_pitcher=home_pitcher,
-            bullpen=[],
+            bullpen=[_bullpen("hbp", "Synthetic Home Bullpen")],
         ),
         park_factors=ParkFactors(
             venue_id="v1",
@@ -208,6 +220,7 @@ def test_rich_report_hides_quality_panel_when_there_are_no_warnings():
     output = console.export_text()
 
     assert "DATA QUALITY" not in output
+    assert "Bullpen" in output
 
 
 def test_rich_report_shows_quality_panel_for_missing_players_only():
@@ -223,14 +236,14 @@ def test_rich_report_shows_quality_panel_for_missing_players_only():
             team_name="Synthetic Away",
             batting_order=[away_batter] + [_batter(f"ab{i}", f"Away Batter {i}") for i in range(2, 10)],
             starting_pitcher=away_pitcher,
-            bullpen=[],
+            bullpen=[_bullpen("abp", "Synthetic Away Bullpen")],
         ),
         home_lineup=Lineup(
             team_id="home",
             team_name="Synthetic Home",
             batting_order=[home_batter] + [_batter(f"hb{i}", f"Home Batter {i}") for i in range(2, 10)],
             starting_pitcher=home_pitcher,
-            bullpen=[],
+            bullpen=[_bullpen("hbp", "Synthetic Home Bullpen")],
         ),
         park_factors=ParkFactors(
             venue_id="v1",

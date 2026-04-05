@@ -16,7 +16,7 @@ from mlb.config import LEAGUE_AVERAGES, NUM_SIMULATIONS, SEASON
 from mlb.data.builder import build_game_context
 from mlb.data.lineups import fetch_todays_games
 from mlb.data.models import GameContext, SimulatedGame, SimulationResult
-from mlb.data.stats import fetch_batting_splits, fetch_pitching_splits
+from mlb.data.stats import fetch_batting_splits, fetch_computed_league_averages, fetch_pitching_splits
 from mlb.engine.aggregate import (
     compute_betting_lines,
     compute_player_stats,
@@ -250,6 +250,15 @@ def load_schedule_and_stats(target_date: str, verbose: bool = False) -> tuple[li
             src = player.get("source", "other")
             counts[src] = counts.get(src, 0) + 1
         logger.info("Pitching stats loaded: %s", counts)
+        league_rates = fetch_computed_league_averages(season=SEASON)
+        logger.info(
+            "League averages (%s): K=%.1f%%, BB=%.1f%%, HR=%.1f%%, AVG=%.3f",
+            SEASON,
+            league_rates["K"] * 100,
+            league_rates["BB"] * 100,
+            league_rates["HR"] * 100,
+            league_rates["AVG"],
+        )
     return games, batting_data, pitching_data
 
 
