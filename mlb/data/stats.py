@@ -24,9 +24,13 @@ logger = logging.getLogger(__name__)
 
 _MIN_BATTER_PA = 50
 _MIN_PITCHER_IP = 20.0
+_MIN_SPLIT_BATTER_PA = 30
+_MIN_SPLIT_PITCHER_BF = 20
 _AVG_PITCHES_PER_INNING = 16.0
 _EARLY_SEASON_BATTER_PA = 20
 _EARLY_SEASON_PITCHER_IP = 10.0
+_SPLIT_MONTH_VS_LEFT = 13
+_SPLIT_MONTH_VS_RIGHT = 14
 
 _NAME_SUFFIX_RE = re.compile(r'\s+(jr|sr|ii|iii|iv)$')
 _TEAM_BULLPEN_CACHE: dict[tuple[int, bool], dict[str, dict[str, Any]]] = {}
@@ -160,6 +164,9 @@ def _first_present(row: dict[str, Any], *keys: str, default: Any = 0.0) -> Any:
 
 
 def _hand_from_value(value: Any, allow_switch: bool = False) -> Hand:
+    # Handle Hand enum directly
+    if isinstance(value, Hand):
+        return value
     text = str(value or "").strip().upper()
     if text == Hand.LEFT.value:
         return Hand.LEFT
@@ -306,7 +313,13 @@ def _extract_batter_rates(row: dict[str, Any]) -> dict[str, float]:
     )
 
 
-def _build_batter_player(row: dict[str, Any], season: int, source: str) -> dict | None:
+def _build_batter_player(
+    row: dict[str, Any],
+    season: int,
+    source: str,
+    *,
+    split_type: str = "overall",
+) -> dict | None:
     pa = _safe_int(_first_present(row, "PA"))
     if pa <= 0:
         return None
@@ -329,11 +342,8 @@ def _build_batter_player(row: dict[str, Any], season: int, source: str) -> dict 
         "rates": rates,
         "season": season,
         "source": source,
-        "split_type": "overall",
-        "notes": (
-            "TODO: replace with true handedness splits via pybaseball split pages "
-            "or an ID-mapped split source."
-        ),
+        "split_type": split_type,
+        "notes": f"FanGraphs batting leaderboard data ({split_type}).",
     }
 
 
@@ -376,7 +386,13 @@ def _extract_pitcher_rates(row: dict[str, Any]) -> tuple[dict[str, float], int]:
     return rates, pa_against
 
 
-def _build_pitcher_player(row: dict[str, Any], season: int, source: str) -> dict | None:
+def _build_pitcher_player(
+    row: dict[str, Any],
+    season: int,
+    source: str,
+    *,
+    split_type: str = "overall",
+) -> dict | None:
     ip = _safe_float(_first_present(row, "IP"))
     if ip <= 0:
         return None
@@ -397,8 +413,8 @@ def _build_pitcher_player(row: dict[str, Any], season: int, source: str) -> dict
         "avg_pitch_count": max(60.0, min(110.0, ip * _AVG_PITCHES_PER_INNING)),
         "season": season,
         "source": source,
-        "split_type": "overall",
-        "notes": "TODO: add handedness splits and stronger ID mapping than player-name matching.",
+        "split_type": split_type,
+        "notes": f"FanGraphs pitching leaderboard data ({split_type}).",
     }
 
 
@@ -480,81 +496,296 @@ def _aggregate_team_bullpen_records(records: list[dict[str, Any]], season: int) 
     return bullpen
 
 
-def _fetch_batting_season_raw(season: int, batting_stats, use_cache: bool) -> dict[str, dict]:
+def _fetch_batting_season_raw(
+    season: int,
+    batting_stats,
+    use_cache: bool,
+    *,
+    kind: str = "batting",
+    month: int | None = None,
+    split_type: str = "overall",
+) -> dict[str, dict]:
     if use_cache:
-        cached = _load_raw_cache("batting", season)
+        cached = _load_raw_cache(kind, season)
         if cached is not None:
             return cached
 
-    records = _frame_to_records(batting_stats(season, qual=1))
+    fetch_kwargs: dict[str, Any] = {"qual": 1}
+    if month is not None:
+        fetch_kwargs["month"] = month
+    records = _frame_to_records(batting_stats(season, **fetch_kwargs))
     players: dict[str, dict] = {}
     for row in records:
-        player = _build_batter_player(row, season, source=str(season))
+        source = f"{season}_{'split' if split_type != 'overall' else 'overall'}"
+        player = _build_batter_player(row, season, source=source, split_type=split_type)
         if player is None:
             continue
         players[_normalize_name(player["name"])] = player
 
-    _save_raw_cache("batting", season, players)
+    _save_raw_cache(kind, season, players)
     return players
 
 
-def _fetch_pitching_season_raw(season: int, pitching_stats, use_cache: bool) -> dict[str, dict]:
+def _fetch_pitching_season_raw(
+    season: int,
+    pitching_stats,
+    use_cache: bool,
+    *,
+    kind: str = "pitching",
+    month: int | None = None,
+    split_type: str = "overall",
+) -> dict[str, dict]:
     if use_cache:
-        cached = _load_raw_cache("pitching", season)
+        cached = _load_raw_cache(kind, season)
         if cached is not None:
             return cached
 
-    records = _frame_to_records(pitching_stats(season, qual=1))
+    fetch_kwargs: dict[str, Any] = {"qual": 1}
+    if month is not None:
+        fetch_kwargs["month"] = month
+    records = _frame_to_records(pitching_stats(season, **fetch_kwargs))
     players: dict[str, dict] = {}
     for row in records:
-        player = _build_pitcher_player(row, season, source=str(season))
+        source = f"{season}_{'split' if split_type != 'overall' else 'overall'}"
+        player = _build_pitcher_player(row, season, source=source, split_type=split_type)
         if player is None:
             continue
         players[_normalize_name(player["name"])] = player
 
-    _save_raw_cache("pitching", season, players)
+    _save_raw_cache(kind, season, players)
     return players
+
+
+def _choose_split_record(
+    current_player: dict[str, Any] | None,
+    prior_player: dict[str, Any] | None,
+    stat_key: str,
+    threshold: int,
+) -> dict[str, Any] | None:
+    if current_player and _safe_int(current_player.get(stat_key)) >= threshold:
+        return current_player
+    if prior_player and _safe_int(prior_player.get(stat_key)) >= threshold:
+        return prior_player
+    return None
+
+
+def _merge_batter_player(
+    current_overall: dict[str, Any] | None,
+    prior_overall: dict[str, Any] | None,
+    current_vs_lhp: dict[str, Any] | None,
+    prior_vs_lhp: dict[str, Any] | None,
+    current_vs_rhp: dict[str, Any] | None,
+    prior_vs_rhp: dict[str, Any] | None,
+    threshold: int,
+) -> dict[str, Any] | None:
+    overall = None
+    if current_overall and _safe_int(current_overall.get("pa")) >= threshold:
+        overall = dict(current_overall)
+    elif prior_overall:
+        overall = dict(prior_overall)
+    if overall is None:
+        return None
+
+    overall["overall"] = {
+        "pa": _safe_int(overall.get("pa")),
+        "rates": dict(overall.get("rates") or {}),
+        "source": str(overall.get("source") or "unknown"),
+        "season": _safe_int(overall.get("season")),
+        "split_type": "overall",
+    }
+    splits: dict[str, dict[str, Any]] = {}
+    vs_lhp = _choose_split_record(current_vs_lhp, prior_vs_lhp, "pa", _MIN_SPLIT_BATTER_PA)
+    if vs_lhp is not None:
+        splits["vs_lhp"] = {
+            "pa": _safe_int(vs_lhp.get("pa")),
+            "rates": dict(vs_lhp.get("rates") or {}),
+            "source": str(vs_lhp.get("source") or "unknown"),
+            "season": _safe_int(vs_lhp.get("season")),
+            "split_type": "vs_lhp",
+        }
+    vs_rhp = _choose_split_record(current_vs_rhp, prior_vs_rhp, "pa", _MIN_SPLIT_BATTER_PA)
+    if vs_rhp is not None:
+        splits["vs_rhp"] = {
+            "pa": _safe_int(vs_rhp.get("pa")),
+            "rates": dict(vs_rhp.get("rates") or {}),
+            "source": str(vs_rhp.get("source") or "unknown"),
+            "season": _safe_int(vs_rhp.get("season")),
+            "split_type": "vs_rhp",
+        }
+    overall["splits"] = splits
+    return overall
+
+
+def _merge_pitcher_player(
+    current_overall: dict[str, Any] | None,
+    prior_overall: dict[str, Any] | None,
+    current_vs_lhb: dict[str, Any] | None,
+    prior_vs_lhb: dict[str, Any] | None,
+    current_vs_rhb: dict[str, Any] | None,
+    prior_vs_rhb: dict[str, Any] | None,
+    threshold: float,
+) -> dict[str, Any] | None:
+    overall = None
+    if current_overall and _safe_float(current_overall.get("ip")) >= threshold:
+        overall = dict(current_overall)
+    elif prior_overall:
+        overall = dict(prior_overall)
+    if overall is None:
+        return None
+
+    overall["overall"] = {
+        "pa_against": _safe_int(overall.get("pa_against")),
+        "rates": dict(overall.get("rates") or {}),
+        "source": str(overall.get("source") or "unknown"),
+        "season": _safe_int(overall.get("season")),
+        "split_type": "overall",
+    }
+    splits: dict[str, dict[str, Any]] = {}
+    vs_lhb = _choose_split_record(current_vs_lhb, prior_vs_lhb, "pa_against", _MIN_SPLIT_PITCHER_BF)
+    if vs_lhb is not None:
+        splits["vs_lhb"] = {
+            "pa_against": _safe_int(vs_lhb.get("pa_against")),
+            "rates": dict(vs_lhb.get("rates") or {}),
+            "source": str(vs_lhb.get("source") or "unknown"),
+            "season": _safe_int(vs_lhb.get("season")),
+            "split_type": "vs_lhb",
+        }
+    vs_rhb = _choose_split_record(current_vs_rhb, prior_vs_rhb, "pa_against", _MIN_SPLIT_PITCHER_BF)
+    if vs_rhb is not None:
+        splits["vs_rhb"] = {
+            "pa_against": _safe_int(vs_rhb.get("pa_against")),
+            "rates": dict(vs_rhb.get("rates") or {}),
+            "source": str(vs_rhb.get("source") or "unknown"),
+            "season": _safe_int(vs_rhb.get("season")),
+            "split_type": "vs_rhb",
+        }
+    overall["splits"] = splits
+    return overall
 
 
 def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
-    """Fetch season batting stats and convert them to per-PA rates.
-
-    v1 uses overall rates for all matchups. True handedness splits require
-    individual split-page requests, which are too slow for this pass.
-    """
+    """Fetch season batting stats plus handedness splits and convert them to per-PA rates."""
     batting_stats, _ = _import_pybaseball()
     current_players = _fetch_batting_season_raw(season, batting_stats, use_cache)
     prior_players = _fetch_batting_season_raw(season - 1, batting_stats, use_cache)
+    current_vs_lhp = _fetch_batting_season_raw(
+        season,
+        batting_stats,
+        use_cache,
+        kind="batting_vs_lhp",
+        month=_SPLIT_MONTH_VS_LEFT,
+        split_type="vs_lhp",
+    )
+    prior_vs_lhp = _fetch_batting_season_raw(
+        season - 1,
+        batting_stats,
+        use_cache,
+        kind="batting_vs_lhp",
+        month=_SPLIT_MONTH_VS_LEFT,
+        split_type="vs_lhp",
+    )
+    current_vs_rhp = _fetch_batting_season_raw(
+        season,
+        batting_stats,
+        use_cache,
+        kind="batting_vs_rhp",
+        month=_SPLIT_MONTH_VS_RIGHT,
+        split_type="vs_rhp",
+    )
+    prior_vs_rhp = _fetch_batting_season_raw(
+        season - 1,
+        batting_stats,
+        use_cache,
+        kind="batting_vs_rhp",
+        month=_SPLIT_MONTH_VS_RIGHT,
+        split_type="vs_rhp",
+    )
     players: dict[str, dict] = {}
     threshold = _batting_threshold_for_season(season)
 
-    all_names = set(current_players) | set(prior_players)
+    all_names = (
+        set(current_players)
+        | set(prior_players)
+        | set(current_vs_lhp)
+        | set(prior_vs_lhp)
+        | set(current_vs_rhp)
+        | set(prior_vs_rhp)
+    )
     for name in all_names:
-        current_player = current_players.get(name)
-        prior_player = prior_players.get(name)
-        if current_player and _safe_int(current_player.get("pa")) >= threshold:
-            players[name] = dict(current_player, source=str(season))
-        elif prior_player:
-            players[name] = dict(prior_player, source=str(season - 1))
+        player = _merge_batter_player(
+            current_players.get(name),
+            prior_players.get(name),
+            current_vs_lhp.get(name),
+            prior_vs_lhp.get(name),
+            current_vs_rhp.get(name),
+            prior_vs_rhp.get(name),
+            threshold,
+        )
+        if player is not None:
+            players[name] = player
     return players
 
 
 def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
-    """Fetch season pitching stats and convert them to per-batter-faced rates."""
+    """Fetch season pitching stats plus handedness splits and convert them to per-batter-faced rates."""
     _, pitching_stats = _import_pybaseball()
     current_players = _fetch_pitching_season_raw(season, pitching_stats, use_cache)
     prior_players = _fetch_pitching_season_raw(season - 1, pitching_stats, use_cache)
+    current_vs_lhb = _fetch_pitching_season_raw(
+        season,
+        pitching_stats,
+        use_cache,
+        kind="pitching_vs_lhb",
+        month=_SPLIT_MONTH_VS_LEFT,
+        split_type="vs_lhb",
+    )
+    prior_vs_lhb = _fetch_pitching_season_raw(
+        season - 1,
+        pitching_stats,
+        use_cache,
+        kind="pitching_vs_lhb",
+        month=_SPLIT_MONTH_VS_LEFT,
+        split_type="vs_lhb",
+    )
+    current_vs_rhb = _fetch_pitching_season_raw(
+        season,
+        pitching_stats,
+        use_cache,
+        kind="pitching_vs_rhb",
+        month=_SPLIT_MONTH_VS_RIGHT,
+        split_type="vs_rhb",
+    )
+    prior_vs_rhb = _fetch_pitching_season_raw(
+        season - 1,
+        pitching_stats,
+        use_cache,
+        kind="pitching_vs_rhb",
+        month=_SPLIT_MONTH_VS_RIGHT,
+        split_type="vs_rhb",
+    )
     players: dict[str, dict] = {}
     threshold = _pitching_threshold_for_season(season)
 
-    all_names = set(current_players) | set(prior_players)
+    all_names = (
+        set(current_players)
+        | set(prior_players)
+        | set(current_vs_lhb)
+        | set(prior_vs_lhb)
+        | set(current_vs_rhb)
+        | set(prior_vs_rhb)
+    )
     for name in all_names:
-        current_player = current_players.get(name)
-        prior_player = prior_players.get(name)
-        if current_player and _safe_float(current_player.get("ip")) >= threshold:
-            players[name] = dict(current_player, source=str(season))
-        elif prior_player:
-            players[name] = dict(prior_player, source=str(season - 1))
+        player = _merge_pitcher_player(
+            current_players.get(name),
+            prior_players.get(name),
+            current_vs_lhb.get(name),
+            prior_vs_lhb.get(name),
+            current_vs_rhb.get(name),
+            prior_vs_rhb.get(name),
+            threshold,
+        )
+        if player is not None:
+            players[name] = player
     return players
 
 
@@ -600,25 +831,78 @@ def fangraphs_team_code(team_name: str) -> str:
     return _TEAM_TO_FG_CODE.get(team_name, "")
 
 
-def build_batter_stats(player_data: dict, hand: str) -> BatterStats:
+def _effective_batter_hand_for_pitcher(batter_hand: Any, pitcher_throws: Hand) -> Hand:
+    hand = _hand_from_value(batter_hand, allow_switch=True)
+    if hand == Hand.SWITCH:
+        return Hand.LEFT if pitcher_throws == Hand.RIGHT else Hand.RIGHT
+    return hand
+
+
+def _select_batter_rates(
+    player_data: dict[str, Any],
+    bats: Hand,
+    pitcher_hand: Any | None,
+    *,
+    use_overall: bool = False,
+) -> tuple[dict[str, float], int, str]:
+    overall = dict(player_data.get("overall") or {})
+    default_rates = dict(player_data.get("rates") or overall.get("rates") or _league_average_rates_for_batter(bats))
+    default_pa = _safe_int(player_data.get("pa") or overall.get("pa"), 0)
+    default_source = str(player_data.get("source") or overall.get("source") or "unknown")
+    if use_overall or pitcher_hand is None:
+        return default_rates, default_pa, default_source
+
+    pitcher_throws = _hand_from_value(pitcher_hand)
+    split_key = "vs_lhp" if pitcher_throws == Hand.LEFT else "vs_rhp"
+    split = (player_data.get("splits") or {}).get(split_key)
+    if split is None:
+        return default_rates, default_pa, default_source
+    return dict(split.get("rates") or default_rates), _safe_int(split.get("pa"), default_pa), str(split.get("source") or default_source)
+
+
+def _select_pitcher_rates(
+    player_data: dict[str, Any],
+    throws: Hand,
+    batter_hand: Any | None,
+    *,
+    use_overall: bool = False,
+) -> tuple[dict[str, float], int, str]:
+    overall = dict(player_data.get("overall") or {})
+    default_rates = dict(player_data.get("rates") or overall.get("rates") or _league_average_rates_for_pitcher(throws))
+    default_pa = _safe_int(player_data.get("pa_against") or overall.get("pa_against"), 0)
+    default_source = str(player_data.get("source") or overall.get("source") or "unknown")
+    if use_overall or batter_hand is None:
+        return default_rates, default_pa, default_source
+
+    effective_batter_hand = _effective_batter_hand_for_pitcher(batter_hand, throws)
+    split_key = "vs_lhb" if effective_batter_hand == Hand.LEFT else "vs_rhb"
+    split = (player_data.get("splits") or {}).get(split_key)
+    if split is None:
+        return default_rates, default_pa, default_source
+    return dict(split.get("rates") or default_rates), _safe_int(split.get("pa_against"), default_pa), str(split.get("source") or default_source)
+
+
+def build_batter_stats(player_data: dict, hand: str, pitcher_hand: Any | None = None, *, use_overall: bool = False) -> BatterStats:
     """Convert a raw player stats dict into BatterStats."""
     bats = _hand_from_value(hand or player_data.get("bats"), allow_switch=True)
-    rates = _normalize_rates(dict(player_data.get("rates") or _league_average_rates_for_batter(bats)))
+    selected_rates, selected_pa, source = _select_batter_rates(player_data, bats, pitcher_hand, use_overall=use_overall)
+    rates = _normalize_rates(selected_rates)
     return BatterStats(
         player_id=str(player_data.get("player_id") or player_data.get("id") or player_data.get("name") or "unknown"),
         name=str(player_data.get("name") or "Unknown Batter"),
         bats=bats,
-        pa=_safe_int(player_data.get("pa"), 0),
+        pa=selected_pa,
         rates=rates,
-        data_source=str(player_data.get("source") or "unknown"),
+        data_source=source,
+        split_profile=player_data,
     )
 
 
-def build_pitcher_stats(player_data: dict) -> PitcherStats:
+def build_pitcher_stats(player_data: dict, batter_hand: Any | None = None, *, use_overall: bool = False) -> PitcherStats:
     """Convert a raw player stats dict into PitcherStats."""
     throws = _hand_from_value(player_data.get("throws"))
-    rates = _normalize_rates(dict(player_data.get("rates") or _league_average_rates_for_pitcher(throws)))
-    pa_against = _safe_int(player_data.get("pa_against"), 0)
+    selected_rates, pa_against, source = _select_pitcher_rates(player_data, throws, batter_hand, use_overall=use_overall)
+    rates = _normalize_rates(selected_rates)
     if pa_against <= 0:
         pa_against = _estimate_pitcher_pa(player_data)
 
@@ -634,5 +918,6 @@ def build_pitcher_stats(player_data: dict) -> PitcherStats:
         pa_against=pa_against,
         rates=rates,
         avg_pitch_count=avg_pitch_count,
-        data_source=str(player_data.get("source") or "unknown"),
+        data_source=source,
+        split_profile=player_data,
     )

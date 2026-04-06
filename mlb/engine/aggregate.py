@@ -55,8 +55,12 @@ def run_simulations(
     if base_seed is None:
         base_seed = random.randint(0, 2**31 - 1)
 
+    # Pre-build the matchup cache once and share it across all simulations so
+    # every PA is a pure dict lookup rather than reconstructing BatterStats/
+    # PitcherStats objects on each game's first encounter.
+    shared_cache: dict = {}
     return [
-        simulate_game(game_context, league_averages, seed=base_seed + i)
+        simulate_game(game_context, league_averages, seed=base_seed + i, _matchup_cache=shared_cache)
         for i in range(n_simulations)
     ]
 

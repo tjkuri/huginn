@@ -117,7 +117,7 @@ After N simulations (default 10,000):
 
 | Source | Used for |
 |--------|----------|
-| `pybaseball` | Season batting/pitching stats (split by handedness in a future version) |
+| `pybaseball` | Season batting/pitching stats with L/R handedness splits |
 | `MLB-StatsAPI` | Today's schedule, confirmed lineups, roster |
 | `mlb/data/park_factors.py` | Hardcoded 2025 park factors (refresh annually) |
 | League averages in `mlb/config.py` | Fallback for unknown players; calibration baseline |
@@ -131,7 +131,7 @@ After N simulations (default 10,000):
 - **Single aggregate bullpen arm.** Each team uses one bullpen pitcher built from team-level relief stats. Individual reliever usage is intentionally abstracted away.
 - **No GIDP in v1.** Ground-ball double plays not modeled; runners hold on generic outs (except sac fly).
 - **Sac fly approximation.** Runner on 3rd scores 50% of the time on a generic out with fewer than 2 outs.
-- **Overall stats stand in for splits.** True L/R split scraping is a future enhancement.
+- **Per-PA handedness splits.** Batters facing the starter use vs-LHP or vs-RHP rates; batters facing the bullpen use overall rates. Pitchers always use their vs-LHB or vs-RHB split based on the batter's effective side.
 
 ## Simulation Heuristics
 

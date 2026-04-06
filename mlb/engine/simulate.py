@@ -6,6 +6,8 @@ and pitcher substitutions. All randomness flows through an explicit
 numpy.random.Generator for reproducibility.
 """
 
+from dataclasses import replace
+
 import numpy as np
 
 from mlb.config import DEFAULT_PITCH_COUNT_LIMIT, OUTCOMES, Outcome, PITCHES_PER_OUTCOME
@@ -19,6 +21,7 @@ from mlb.data.models import (
     PitcherStats,
     SimulatedGame,
 )
+from mlb.data.stats import build_batter_stats, build_pitcher_stats
 from mlb.engine.probabilities import build_pa_probability_table
 
 
@@ -236,12 +239,66 @@ def get_current_pitcher(
     return lineup.bullpen[idx]
 
 
+def _resolve_pa_stats(
+    batter: BatterStats,
+    pitcher: PitcherStats,
+    *,
+    is_bullpen: bool,
+    matchup_cache: dict[tuple[str, str, bool], tuple[BatterStats, PitcherStats]],
+) -> tuple[BatterStats, PitcherStats]:
+    cache_key = (batter.player_id, pitcher.player_id, is_bullpen)
+    cached = matchup_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    resolved_batter = batter
+    batter_profile = getattr(batter, "split_profile", None)
+    if batter_profile:
+        try:
+            resolved_batter = build_batter_stats(
+                batter_profile,
+                batter.bats.value,
+                pitcher_hand=pitcher.throws.value,
+                use_overall=is_bullpen,
+            )
+            resolved_batter = replace(
+                resolved_batter,
+                player_id=batter.player_id,
+                name=batter.name,
+                split_profile=batter_profile,
+            )
+        except Exception:
+            resolved_batter = batter
+
+    resolved_pitcher = pitcher
+    pitcher_profile = getattr(pitcher, "split_profile", None)
+    if pitcher_profile:
+        try:
+            resolved_pitcher = build_pitcher_stats(
+                pitcher_profile,
+                batter_hand=batter.bats.value,
+                use_overall=False,
+            )
+            resolved_pitcher = replace(
+                resolved_pitcher,
+                player_id=pitcher.player_id,
+                name=pitcher.name,
+                split_profile=pitcher_profile,
+            )
+        except Exception:
+            resolved_pitcher = pitcher
+
+    matchup_cache[cache_key] = (resolved_batter, resolved_pitcher)
+    return resolved_batter, resolved_pitcher
+
+
 def simulate_half_inning(
     game_context: GameContext,
     game_state: GameState,
     is_top: bool,
     league_averages: dict,
     rng: np.random.Generator,
+    matchup_cache: dict[tuple[str, str, bool], tuple[BatterStats, PitcherStats]] | None = None,
 ) -> list[PAResult]:
     """Simulate one half-inning (until 3 outs or walk-off).
 
@@ -249,6 +306,8 @@ def simulate_half_inning(
     bullpen index). Returns the list of PAResults for this half-inning.
     """
     results: list[PAResult] = []
+    if matchup_cache is None:
+        matchup_cache = {}
     outs = 0
     bases = game_state.bases  # supports extra-inning ghost runner
 
@@ -301,10 +360,17 @@ def simulate_half_inning(
                 bullpen_idx = game_state.away_bullpen_index
 
         pitcher = get_current_pitcher(defensive_lineup, game_state, is_home=is_defense_home)
+        is_bullpen = pitcher is not defensive_lineup.starting_pitcher
+        batter_for_pa, pitcher_for_pa = _resolve_pa_stats(
+            batter,
+            pitcher,
+            is_bullpen=is_bullpen,
+            matchup_cache=matchup_cache,
+        )
 
         # Build probability table and sample outcome
         prob_table = build_pa_probability_table(
-            batter, pitcher, game_context.park_factors,
+            batter_for_pa, pitcher_for_pa, game_context.park_factors,
             game_context.weather, league_averages,
         )
         outcome = resolve_pa_outcome(prob_table, rng)
@@ -360,20 +426,53 @@ def simulate_half_inning(
 _MAX_INNINGS = 15  # Mercy rule cap to prevent infinite loops
 
 
+def _prefill_matchup_cache(
+    game_context: GameContext,
+    matchup_cache: dict[tuple[str, str, bool], tuple[BatterStats, PitcherStats]],
+) -> None:
+    """Pre-resolve all batter/pitcher combinations into the cache.
+
+    Calling this once before the simulation loop means every PA is a pure
+    dict lookup with no object construction in the hot path.
+    """
+    for batting_lineup, defensive_lineup in [
+        (game_context.away_lineup, game_context.home_lineup),
+        (game_context.home_lineup, game_context.away_lineup),
+    ]:
+        pitchers: list[tuple[PitcherStats, bool]] = [
+            (defensive_lineup.starting_pitcher, False),
+        ] + [(p, True) for p in defensive_lineup.bullpen]
+        for pitcher, is_bullpen in pitchers:
+            for batter in batting_lineup.batting_order:
+                _resolve_pa_stats(batter, pitcher, is_bullpen=is_bullpen, matchup_cache=matchup_cache)
+
+
 def simulate_game(
     game_context: GameContext,
     league_averages: dict,
     seed: int | None = None,
+    *,
+    _matchup_cache: dict | None = None,
 ) -> SimulatedGame:
     """Simulate a complete baseball game.
 
     Returns a SimulatedGame with runs, hits, innings, and full PA log.
     The optional seed makes the simulation fully reproducible.
+
+    _matchup_cache: optional pre-built cache shared across many simulate_game
+    calls (e.g. from run_simulations). When provided and already populated,
+    every PA is a pure dict lookup with no object construction overhead.
+    When None or empty, the cache is pre-filled once before the inning loop.
     """
     rng = np.random.default_rng(seed)
     game_state = GameState()
     all_pa_results: list[PAResult] = []
     inning_scores = {'away': [], 'home': []}
+    matchup_cache: dict[tuple[str, str, bool], tuple[BatterStats, PitcherStats]] = (
+        _matchup_cache if _matchup_cache is not None else {}
+    )
+    if not matchup_cache:
+        _prefill_matchup_cache(game_context, matchup_cache)
 
     while game_state.inning <= _MAX_INNINGS:
         # ── Top of inning ────────────────────────────────────────────
@@ -389,6 +488,7 @@ def simulate_game(
         top_results = simulate_half_inning(
             game_context, game_state, is_top=True,
             league_averages=league_averages, rng=rng,
+            matchup_cache=matchup_cache,
         )
         all_pa_results.extend(top_results)
         inning_scores['away'].append(game_state.away_score - away_before)
@@ -410,6 +510,7 @@ def simulate_game(
         bottom_results = simulate_half_inning(
             game_context, game_state, is_top=False,
             league_averages=league_averages, rng=rng,
+            matchup_cache=matchup_cache,
         )
         all_pa_results.extend(bottom_results)
         inning_scores['home'].append(game_state.home_score - home_before)

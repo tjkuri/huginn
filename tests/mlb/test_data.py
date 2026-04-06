@@ -39,6 +39,20 @@ def _raw_batter(name="Test Batter", bats="R"):
             "HR": 3 / 150,
             "OUT": 77 / 150,
         },
+        "overall": {
+            "pa": 150,
+            "rates": {
+                "K": 30 / 150,
+                "BB": 12 / 150,
+                "HBP": 2 / 150,
+                "1B": 20 / 150,
+                "2B": 5 / 150,
+                "3B": 1 / 150,
+                "HR": 3 / 150,
+                "OUT": 77 / 150,
+            },
+            "source": "2026_overall",
+        },
     }
 
 
@@ -59,6 +73,20 @@ def _raw_pitcher(name="Test Pitcher", throws="R"):
             "HR": 6 / 180,
             "OUT": 75 / 180,
         },
+        "overall": {
+            "pa_against": 180,
+            "rates": {
+                "K": 40 / 180,
+                "BB": 18 / 180,
+                "HBP": 2 / 180,
+                "1B": 30 / 180,
+                "2B": 8 / 180,
+                "3B": 1 / 180,
+                "HR": 6 / 180,
+                "OUT": 75 / 180,
+            },
+            "source": "2026_overall",
+        },
     }
 
 
@@ -68,6 +96,7 @@ class TestBuildBatterStats:
         assert batter.bats == Hand.RIGHT
         assert sum(batter.rates.values()) == pytest.approx(1.0)
         assert batter.rates["OUT"] > 0
+        assert batter.data_source == "2026_overall"
 
     def test_rate_conversion_math(self):
         batter = build_batter_stats(_raw_batter(), "R")
@@ -79,6 +108,25 @@ class TestBuildBatterStats:
         assert batter.rates["3B"] == pytest.approx(1 / 150)
         assert batter.rates["HR"] == pytest.approx(3 / 150)
 
+    def test_uses_vs_lhp_split_when_facing_left_hander(self):
+        raw = _raw_batter()
+        raw["splits"] = {
+            "vs_lhp": {
+                "pa": 40,
+                "rates": dict(raw["rates"], HR=0.08, OUT=0.7033333333333334),
+                "source": "2026_split",
+            }
+        }
+        batter = build_batter_stats(raw, "R", pitcher_hand="L")
+        assert batter.rates["HR"] == pytest.approx(0.08)
+        assert batter.data_source == "2026_split"
+
+    def test_falls_back_to_overall_when_batter_split_missing(self):
+        raw = _raw_batter()
+        batter = build_batter_stats(raw, "R", pitcher_hand="L")
+        assert batter.rates["HR"] == pytest.approx(3 / 150)
+        assert batter.data_source == "2026_overall"
+
 
 class TestBuildPitcherStats:
     def test_produces_valid_pitcher_stats(self):
@@ -86,6 +134,20 @@ class TestBuildPitcherStats:
         assert pitcher.throws == Hand.RIGHT
         assert sum(pitcher.rates.values()) == pytest.approx(1.0)
         assert pitcher.avg_pitch_count > 0
+        assert pitcher.data_source == "2026_overall"
+
+    def test_uses_vs_lhb_split_when_facing_left_handed_batter(self):
+        raw = _raw_pitcher()
+        raw["splits"] = {
+            "vs_lhb": {
+                "pa_against": 70,
+                "rates": dict(raw["rates"], K=0.30, OUT=0.5222222222222223),
+                "source": "2026_split",
+            }
+        }
+        pitcher = build_pitcher_stats(raw, batter_hand="L")
+        assert pitcher.rates["K"] == pytest.approx(0.30)
+        assert pitcher.data_source == "2026_split"
 
 
 class TestParkFactors:
@@ -199,6 +261,8 @@ class TestFetchBattingSplits:
         assert player["rates"]["HBP"] == pytest.approx(2 / 150)
         assert player["rates"]["1B"] == pytest.approx(20 / 150)
         assert sum(player["rates"].values()) == pytest.approx(1.0)
+        assert player["source"] == "2026_overall"
+        assert player["overall"]["source"] == "2026_overall"
 
     def test_uses_2025_fallback_for_sparse_2026(self, monkeypatch):
         class FakeFrame:
@@ -223,14 +287,24 @@ class TestFetchBattingSplits:
         monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
 
         def fake_batting_stats(season, **kwargs):
+            month = kwargs.get("month")
+            if month == 13:
+                return FakeFrame([
+                    {"Name": "Qualified Batter", "PA": 35, "K%": 0.19, "BB%": 0.07, "HBP": 0, "H": 9, "2B": 1, "3B": 0, "HR": 2, "IDfg": 1, "Team": "ABC", "Bat": "R"}
+                ])
+            if month == 14:
+                return FakeFrame([
+                    {"Name": "Qualified Batter", "PA": 50, "K%": 0.18, "BB%": 0.09, "HBP": 1, "H": 14, "2B": 3, "3B": 0, "HR": 2, "IDfg": 1, "Team": "ABC", "Bat": "R"}
+                ])
             return FakeFrame(rows_2026 if season == 2026 else rows_2025)
 
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (fake_batting_stats, None))
 
         data = fetch_batting_splits(season=2026, use_cache=False)
-        assert data["qualified batter"]["source"] == "2026"
+        assert data["qualified batter"]["source"] == "2026_overall"
         assert data["qualified batter"]["pa"] == 25
-        assert data["fallback batter"]["source"] == "2025"
+        assert data["qualified batter"]["splits"]["vs_lhp"]["source"] == "2026_split"
+        assert data["fallback batter"]["source"] == "2025_overall"
         assert data["fallback batter"]["pa"] == 130
 
     def test_early_season_threshold_is_20_pa(self, monkeypatch):
@@ -290,13 +364,23 @@ class TestFetchPitchingSplits:
         monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
 
         def fake_pitching_stats(season, **kwargs):
+            month = kwargs.get("month")
+            if month == 13:
+                return FakeFrame([
+                    {"Name": "Qualified Pitcher", "IP": 12.0, "H": 7, "2B": 1, "3B": 0, "HR": 1, "BB": 2, "HBP": 0, "SO": 15, "IDfg": 1, "Team": "ABC", "Throws": "R"},
+                ])
+            if month == 14:
+                return FakeFrame([
+                    {"Name": "Qualified Pitcher", "IP": 12.0, "H": 9, "2B": 2, "3B": 0, "HR": 2, "BB": 4, "HBP": 0, "SO": 13, "IDfg": 1, "Team": "ABC", "Throws": "R"},
+                ])
             return FakeFrame(rows_2026 if season == 2026 else rows_2025)
 
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (None, fake_pitching_stats))
 
         data = fetch_pitching_splits(season=2026, use_cache=False)
-        assert data["qualified pitcher"]["source"] == "2026"
-        assert data["fallback pitcher"]["source"] == "2025"
+        assert data["qualified pitcher"]["source"] == "2026_overall"
+        assert data["qualified pitcher"]["splits"]["vs_lhb"]["source"] == "2026_split"
+        assert data["fallback pitcher"]["source"] == "2025_overall"
 
 
 class TestFetchTodaysGames:
@@ -364,12 +448,18 @@ class TestBuildGameContext:
             "home_pitcher": {"name": "Home Starter", "id": "hp", "throws": "L"},
         }
         batting_data = {
-            f"away batter {i}": _raw_batter(name=f"Away Batter {i}", bats="R")
+            f"away batter {i}": dict(
+                _raw_batter(name=f"Away Batter {i}", bats="R"),
+                splits={"vs_lhp": {"pa": 40, "rates": dict(_raw_batter()["rates"], HR=0.08, OUT=0.7033333333333334), "source": "2026_split"}},
+            )
             for i in range(1, 10)
         }
         batting_data.update(
             {
-                f"home batter {i}": _raw_batter(name=f"Home Batter {i}", bats="L")
+                f"home batter {i}": dict(
+                    _raw_batter(name=f"Home Batter {i}", bats="L"),
+                    splits={"vs_rhp": {"pa": 50, "rates": dict(_raw_batter()["rates"], BB=0.12, OUT=0.6733333333333333), "source": "2026_split"}},
+                )
                 for i in range(1, 10)
             }
         )
@@ -419,7 +509,7 @@ class TestBuildGameContext:
         assert len(context.home_lineup.batting_order) == 9
         assert context.away_lineup.starting_pitcher.name == "Away Starter"
         assert context.home_lineup.starting_pitcher.name == "Home Starter"
-        assert all(getattr(batter, "data_source", None) in {None, "unknown"} or getattr(batter, "data_source") == "2026" for batter in context.away_lineup.batting_order)
+        assert all(getattr(batter, "data_source", None) == "2026_split" for batter in context.away_lineup.batting_order)
         assert len(context.away_lineup.bullpen) == 1
         assert len(context.home_lineup.bullpen) == 1
         assert context.away_lineup.bullpen[0].name == "Away Team Bullpen"

@@ -5,6 +5,7 @@ weather, lineups, game context, simulation state, and results.
 """
 import logging
 from dataclasses import dataclass, field
+from typing import Any
 
 from mlb.config import Hand, Outcome, WindDirection
 
@@ -65,6 +66,7 @@ class BatterStats:
     pa: int                 # plate appearances in this split
     rates: dict[str, float] # outcome rates keyed by OUTCOMES, should sum to ~1.0
     data_source: str = "unknown"
+    split_profile: dict[str, Any] | None = None
 
     def __post_init__(self):
         _validate_rates(self.rates, tolerance=0.02, label=f"BatterStats({self.name})")
@@ -80,6 +82,7 @@ class PitcherStats:
     rates: dict[str, float]     # outcome rates allowed, keyed by OUTCOMES
     avg_pitch_count: float = 0.0  # average pitches per start (stamina modeling)
     data_source: str = "unknown"
+    split_profile: dict[str, Any] | None = None
 
     def __post_init__(self):
         _validate_rates(self.rates, tolerance=0.02, label=f"PitcherStats({self.name})")

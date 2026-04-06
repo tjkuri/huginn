@@ -386,6 +386,37 @@ _REALISTIC_RATES = {
 }
 
 
+def _make_batter_profile(name: str, bats: str = 'R') -> dict:
+    return {
+        "player_id": name,
+        "name": name,
+        "bats": bats,
+        "pa": 500,
+        "rates": dict(_REALISTIC_RATES),
+        "overall": {
+            "pa": 500,
+            "rates": dict(_REALISTIC_RATES),
+            "source": "2026_overall",
+        },
+    }
+
+
+def _make_pitcher_profile(name: str, throws: str = 'R') -> dict:
+    return {
+        "player_id": name,
+        "name": name,
+        "throws": throws,
+        "pa_against": 500,
+        "rates": dict(_REALISTIC_RATES),
+        "avg_pitch_count": 85.0,
+        "overall": {
+            "pa_against": 500,
+            "rates": dict(_REALISTIC_RATES),
+            "source": "2026_overall",
+        },
+    }
+
+
 def _make_pitcher(name: str, throws: str = 'R') -> PitcherStats:
     """Helper to create a PitcherStats with realistic league-average rates."""
     return PitcherStats(
@@ -606,6 +637,126 @@ class TestSimulateHalfInning:
     def test_real_ip_tracking_uses_outs_recorded(self):
         """Nine outs recorded corresponds to 3.0 innings pitched."""
         assert should_pull_starter(20, 9 / 3.0, 0, config={"innings_limit": 3.0}) is True
+
+    def test_uses_batter_split_against_starter_but_overall_against_bullpen(self, monkeypatch):
+        batter_profile = _make_batter_profile("Batter0", bats="R")
+        batter_profile["splits"] = {
+            "vs_lhp": {
+                "pa": 60,
+                "rates": dict(_REALISTIC_RATES, HR=0.090, OUT=0.403),
+                "source": "2026_split",
+            }
+        }
+        batter = BatterStats(
+            player_id="b0",
+            name="Batter0",
+            bats=Hand.RIGHT,
+            pa=500,
+            rates=dict(_REALISTIC_RATES),
+            data_source="2026_overall",
+            split_profile=batter_profile,
+        )
+        away_lineup = _make_lineup("AwaySP")
+        away_lineup.batting_order[0] = batter
+
+        starter_profile = _make_pitcher_profile("HomeSP", throws="L")
+        starter_profile["splits"] = {
+            "vs_rhb": {
+                "pa_against": 90,
+                "rates": dict(_REALISTIC_RATES, K=0.300, OUT=0.388),
+                "source": "2026_split",
+            }
+        }
+        bullpen_profile = _make_pitcher_profile("Reliever1", throws="L")
+        bullpen_profile["splits"] = {
+            "vs_rhb": {
+                "pa_against": 80,
+                "rates": dict(_REALISTIC_RATES, BB=0.120, OUT=0.419),
+                "source": "2026_split",
+            }
+        }
+        home_lineup = _make_lineup("HomeSP", bullpen_names=["Reliever1"])
+        home_lineup.starting_pitcher = PitcherStats(
+            player_id="HomeSP",
+            name="HomeSP",
+            throws=Hand.LEFT,
+            pa_against=500,
+            rates=dict(_REALISTIC_RATES),
+            data_source="2026_overall",
+            split_profile=starter_profile,
+        )
+        home_lineup.bullpen = [
+            PitcherStats(
+                player_id="Reliever1",
+                name="Reliever1",
+                throws=Hand.LEFT,
+                pa_against=500,
+                rates=dict(_REALISTIC_RATES),
+                data_source="2026_overall",
+                split_profile=bullpen_profile,
+            )
+        ]
+        ctx = _make_game_context(away_lineup=away_lineup, home_lineup=home_lineup)
+        captured: list[tuple[str, float, str, float]] = []
+
+        def fake_build_pa_probability_table(batter, pitcher, *_args, **_kwargs):
+            captured.append((batter.data_source, batter.rates["HR"], pitcher.data_source, pitcher.rates["K"]))
+            return {o.value: (1.0 if o == Outcome.OUT else 0.0) for o in Outcome}
+
+        monkeypatch.setattr("mlb.engine.simulate.build_pa_probability_table", fake_build_pa_probability_table)
+
+        state = GameState()
+        simulate_half_inning(ctx, state, is_top=True, league_averages=LEAGUE_AVERAGES, rng=np.random.default_rng(42))
+        assert captured[0] == ("2026_split", pytest.approx(0.090), "2026_split", pytest.approx(0.300))
+
+        captured.clear()
+        state = GameState(home_bullpen_index=0)
+        simulate_half_inning(ctx, state, is_top=True, league_averages=LEAGUE_AVERAGES, rng=np.random.default_rng(42))
+        assert captured[0] == ("2026_overall", pytest.approx(_REALISTIC_RATES["HR"]), "2026_split", pytest.approx(_REALISTIC_RATES["K"]))
+
+    def test_pitcher_split_uses_switch_hitter_effective_side(self, monkeypatch):
+        batter_profile = _make_batter_profile("SwitchBatter", bats="S")
+        batter = BatterStats(
+            player_id="b0",
+            name="SwitchBatter",
+            bats=Hand.SWITCH,
+            pa=500,
+            rates=dict(_REALISTIC_RATES),
+            data_source="2026_overall",
+            split_profile=batter_profile,
+        )
+        away_lineup = _make_lineup("AwaySP")
+        away_lineup.batting_order[0] = batter
+
+        starter_profile = _make_pitcher_profile("HomeSP", throws="R")
+        starter_profile["splits"] = {
+            "vs_lhb": {
+                "pa_against": 75,
+                "rates": dict(_REALISTIC_RATES, BB=0.140, OUT=0.399),
+                "source": "2026_split",
+            }
+        }
+        home_lineup = _make_lineup("HomeSP")
+        home_lineup.starting_pitcher = PitcherStats(
+            player_id="HomeSP",
+            name="HomeSP",
+            throws=Hand.RIGHT,
+            pa_against=500,
+            rates=dict(_REALISTIC_RATES),
+            data_source="2026_overall",
+            split_profile=starter_profile,
+        )
+        ctx = _make_game_context(away_lineup=away_lineup, home_lineup=home_lineup)
+        captured: list[float] = []
+
+        def fake_build_pa_probability_table(_batter, pitcher, *_args, **_kwargs):
+            captured.append(pitcher.rates["BB"])
+            return {o.value: (1.0 if o == Outcome.OUT else 0.0) for o in Outcome}
+
+        monkeypatch.setattr("mlb.engine.simulate.build_pa_probability_table", fake_build_pa_probability_table)
+
+        simulate_half_inning(ctx, GameState(), is_top=True, league_averages=LEAGUE_AVERAGES, rng=np.random.default_rng(7))
+        assert captured[0] == pytest.approx(0.140)
 
 
 from mlb.engine.simulate import simulate_game

@@ -31,7 +31,7 @@ mlb/                             MLB Monte Carlo simulation engine
   scripts/test_smoke.py          Synthetic end-to-end smoke test (no APIs)
   scripts/diagnose_calibration.py League-average diagnostic for PA/run calibration
   scripts/diagnose_pitchers.py    Diagnostic for probable pitcher assignment vs roster fallback
-tests/mlb/                       pytest test suite (195 tests)
+tests/mlb/                       pytest test suite (201 tests)
 ```
 
 ## Commands
@@ -119,10 +119,10 @@ Key files in the sibling repo for understanding the data:
 - **No GIDP in v1.** Ground-ball double plays not modeled; runners hold on generic outs (except sac fly).
 - **MLB data layer uses external sources.** `pybaseball` provides season stats; `MLB-StatsAPI` provides schedules, lineups, and rosters.
 - **Lazy imports protect tests.** Data fetch modules import external packages only when fetch functions are called, so mocked tests run without live network usage.
-- **Overall stats stand in for true splits in v1.** `mlb/data/stats.py` uses season-level overall rates for all handedness matchups. Proper split scraping is a future enhancement.
+- **True handedness splits are resolved per PA.** `mlb/data/stats.py` fetches vs-LHP/vs-RHP batting splits and vs-LHB/vs-RHB pitching splits from FanGraphs leaderboards using month parameters (13=vs-left, 14=vs-right). In the game engine, batters facing a starter use the handedness split matching the starter's throwing hand; batters facing the aggregate bullpen arm use their overall rates instead of a platoon split. Pitchers always use their handedness-allowed split based on the batter's effective side (switch hitters bat opposite the pitcher). Minimum 30 PA (batter) or 20 BF (pitcher) required to trust a split; otherwise falls back to overall rates.
 - **Name matching is v1 identity resolution.** pybaseball and MLB Stats API players are matched by normalized player name for now; no persistent ID map yet. Normalization strips Unicode accents (Agustín → agustin), removes periods from initials (J.C. → JC), and drops trailing suffixes (Jr./Sr./II/III).
 - **Early season uses prior-year coverage.** In April, 2026 batting/pitching thresholds drop to 20 PA / 10 IP. Players still below those thresholds fall back to 2025 season stats before league-average fallback.
-- **Player source tags are explicit.** Data-layer player payloads now carry `source` values of `2026`, `2025`, or `league_avg`, and the CLI reports batter source counts in data notes.
+- **Player source tags are explicit.** Data-layer player payloads now carry split-aware `source` values such as `2026_split`, `2026_overall`, `2025_split`, `2025_overall`, or `league_avg`, and the CLI reports batter source counts in data notes.
 - **Missing real-player data falls back to league average.** Unknown batters/pitchers log warnings and use league-average rates so game-context assembly does not fail.
 - **Park factors are coarse annual inputs.** `mlb/data/park_factors.py` uses hardcoded approximate 2025 factors that should be refreshed annually.
 - **CLI has two output modes.** `mlb/scripts/simulate_game.py` prints human-readable summaries by default and emits clean JSON arrays on stdout with `--json`.
@@ -156,21 +156,23 @@ baseball_cache/
   raw_pitching-2025.json          ← prior season, kept forever
   raw_batting-2026.json           ← current season, re-fetched if older than 6 hours
   raw_pitching-2026.json          ← current season, re-fetched if older than 6 hours
+  raw_batting_vs_lhp-2025.json    ← LHB vs LHP batting splits, prior season, kept forever
+  raw_batting_vs_lhp-2026.json    ← LHB vs LHP batting splits, current season, 6-hour TTL
+  raw_batting_vs_rhp-2025.json    ← LHB vs RHP batting splits, prior season, kept forever
+  raw_batting_vs_rhp-2026.json    ← LHB vs RHP batting splits, current season, 6-hour TTL
+  raw_pitching_vs_lhb-2025.json   ← pitcher vs LHB splits, prior season, kept forever
+  raw_pitching_vs_lhb-2026.json   ← pitcher vs LHB splits, current season, 6-hour TTL
+  raw_pitching_vs_rhb-2025.json   ← pitcher vs RHB splits, prior season, kept forever
+  raw_pitching_vs_rhb-2026.json   ← pitcher vs RHB splits, current season, 6-hour TTL
   computed_league_averages-2026.json  ← PA-weighted overall rates, same TTL as current-season stats
   park_factors-2025.json          ← Baseball Savant park factors for prior season, kept forever
   park_factors-2026.json          ← current season Savant park factors, no TTL (delete to refresh)
   pybaseball/                     ← pybaseball's own HTTP/DataFrame cache
 ```
 
-**TTL logic:** `STATS_CACHE_MAX_AGE_HOURS = 6` in `mlb/config.py`. Files for seasons prior to `SEASON` never expire. Only the two current-season raw stat files are age-checked. Park factor cache files have no TTL — delete to force a fresh Savant fetch.
+**TTL logic:** `STATS_CACHE_MAX_AGE_HOURS = 6` in `mlb/config.py`. Files for seasons prior to `SEASON` never expire. Current-season raw stat files (batting, pitching, and all split variants) are age-checked; prior seasons are kept forever. Park factor cache files have no TTL — delete to force a fresh Savant fetch.
 
-**No merged/intermediate cache.** `fetch_batting_splits` and `fetch_pitching_splits` merge current + prior season data on every call (takes milliseconds). The raw files are the only persistence layer.
+**No merged/intermediate cache.** `fetch_batting_splits` and `fetch_pitching_splits` merge current + prior season data on every call (takes milliseconds). Raw overall and split files are cached separately; merging is lazy and fast.
 
-**Cache invalidation:** Delete any of the raw stat files to force a fresh pybaseball scrape. Delete `park_factors-{season}.json` to force a fresh Savant fetch. Delete `baseball_cache/pybaseball/` to force pybaseball to re-download from FanGraphs.
+**Cache invalidation:** Delete any of the raw stat files to force a fresh pybaseball scrape (overall or split variants). Delete `park_factors-{season}.json` to force a fresh Savant fetch. Delete `baseball_cache/pybaseball/` to force pybaseball to re-download from FanGraphs.
 
-## Future Work
-
-- Multi-objective optimization (beat_rate + roi simultaneously)
-- Model architecture search (different formulas, not just parameters)
-- MLB Monte Carlo simulation engine (odds ratio, baserunner tracking, pitcher substitutions)
-- Jupyter notebooks for EDA

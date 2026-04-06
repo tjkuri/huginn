@@ -62,8 +62,13 @@ def _league_average_pitcher(name: str, throws: str) -> dict:
     }
 
 
-def _build_batting_order(players: list[dict], batting_data: dict[str, dict]) -> list[BatterStats]:
+def _build_batting_order(
+    players: list[dict],
+    batting_data: dict[str, dict],
+    opposing_pitcher: dict | None = None,
+) -> list[BatterStats]:
     batting_order: list[BatterStats] = []
+    opposing_throws = (opposing_pitcher or {}).get("throws")
     for player in players[:9]:
         name = player.get("name", "")
         stats = batting_data.get(_normalize_name(name))
@@ -73,7 +78,11 @@ def _build_batting_order(players: list[dict], batting_data: dict[str, dict]) -> 
         elif stats.get("source") == str(SEASON - 1):
             logger.info("Using %s batting stats for %s", SEASON - 1, name)
 
-        batter = build_batter_stats(stats, player.get("bats", stats.get("bats", "R")))
+        batter = build_batter_stats(
+            stats,
+            player.get("bats", stats.get("bats", "R")),
+            pitcher_hand=opposing_throws,
+        )
         batter.player_id = str(player.get("id") or batter.player_id)
         batter.name = str(player.get("name") or batter.name)
         batting_order.append(batter)
@@ -203,14 +212,22 @@ def build_game_context(
     away_lineup = Lineup(
         team_id=str(game_info.get("away_team_id") or ""),
         team_name=str(game_info.get("away_team") or ""),
-        batting_order=_build_batting_order(lineup_info["away_batters"], batting_data),
+        batting_order=_build_batting_order(
+            lineup_info["away_batters"],
+            batting_data,
+            lineup_info.get("home_pitcher"),
+        ),
         starting_pitcher=_build_pitcher(lineup_info.get("away_pitcher"), pitching_data),
         bullpen=_build_bullpen(str(game_info.get("away_team") or "Away Team")),
     )
     home_lineup = Lineup(
         team_id=str(game_info.get("home_team_id") or ""),
         team_name=str(game_info.get("home_team") or ""),
-        batting_order=_build_batting_order(lineup_info["home_batters"], batting_data),
+        batting_order=_build_batting_order(
+            lineup_info["home_batters"],
+            batting_data,
+            lineup_info.get("away_pitcher"),
+        ),
         starting_pitcher=_build_pitcher(lineup_info.get("home_pitcher"), pitching_data),
         bullpen=_build_bullpen(str(game_info.get("home_team") or "Home Team")),
     )
