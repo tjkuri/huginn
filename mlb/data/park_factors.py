@@ -15,41 +15,47 @@ from mlb.data.models import ParkFactors
 
 logger = logging.getLogger(__name__)
 
-# Approximate 2025 park factors synthesized from FanGraphs Guts and Baseball
-# Savant park-factor references. These are deliberately coarse v1 multipliers
-# and should be refreshed annually as more stable season-level data arrives.
+# 2025 fallback park factors. Values are from the 2025 Savant cache snapshot
+# where available; the temporary/unused venues called out below remain explicit
+# placeholders until a full-season Savant value is available for them.
 PARK_FACTORS = {
-    "Angel Stadium": {"factors_vs_lhb": {"HR": 1.02, "2B": 1.00, "3B": 0.92, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.01, "2B": 1.01, "3B": 0.92, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "American Family Field": {"factors_vs_lhb": {"HR": 1.03, "2B": 1.00, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.04, "2B": 1.00, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Busch Stadium": {"factors_vs_lhb": {"HR": 0.95, "2B": 0.98, "3B": 0.92, "1B": 0.99, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 0.94, "2B": 0.98, "3B": 0.92, "1B": 0.99, "BB": 1.00, "K": 1.00}},
-    "Chase Field": {"factors_vs_lhb": {"HR": 1.03, "2B": 1.02, "3B": 1.02, "1B": 1.01, "BB": 1.00, "K": 0.99}, "factors_vs_rhb": {"HR": 1.05, "2B": 1.03, "3B": 1.02, "1B": 1.01, "BB": 1.00, "K": 0.99}},
-    "Citi Field": {"factors_vs_lhb": {"HR": 0.96, "2B": 1.00, "3B": 0.95, "1B": 0.99, "BB": 1.00, "K": 1.01}, "factors_vs_rhb": {"HR": 0.97, "2B": 1.00, "3B": 0.95, "1B": 0.99, "BB": 1.00, "K": 1.01}},
-    "Citizens Bank Park": {"factors_vs_lhb": {"HR": 1.12, "2B": 1.00, "3B": 0.86, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.09, "2B": 1.01, "3B": 0.86, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Comerica Park": {"factors_vs_lhb": {"HR": 0.94, "2B": 1.06, "3B": 1.18, "1B": 1.01, "BB": 1.00, "K": 0.99}, "factors_vs_rhb": {"HR": 0.92, "2B": 1.05, "3B": 1.16, "1B": 1.01, "BB": 1.00, "K": 0.99}},
-    "Coors Field": {"factors_vs_lhb": {"HR": 1.25, "2B": 1.20, "3B": 1.40, "1B": 1.10, "BB": 1.00, "K": 0.95}, "factors_vs_rhb": {"HR": 1.30, "2B": 1.18, "3B": 1.35, "1B": 1.08, "BB": 1.00, "K": 0.94}},
-    "Daikin Park": {"factors_vs_lhb": {"HR": 1.00, "2B": 0.99, "3B": 0.94, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.08, "2B": 1.00, "3B": 0.94, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Dodger Stadium": {"factors_vs_lhb": {"HR": 1.00, "2B": 0.99, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.02, "2B": 1.00, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Fenway Park": {"factors_vs_lhb": {"HR": 0.98, "2B": 1.14, "3B": 0.85, "1B": 1.05, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.01, "2B": 1.18, "3B": 0.84, "1B": 1.05, "BB": 1.00, "K": 1.00}},
+    "American Family Field": {"factors_vs_lhb": {"HR": 1.0, "2B": 0.78, "3B": 1.05, "1B": 0.95, "BB": 1.08, "K": 1.13}, "factors_vs_rhb": {"HR": 1.1, "2B": 0.93, "3B": 0.7, "1B": 0.93, "BB": 1.05, "K": 1.07}},
+    "Angel Stadium": {"factors_vs_lhb": {"HR": 1.08, "2B": 0.86, "3B": 0.99, "1B": 0.95, "BB": 1.03, "K": 1.03}, "factors_vs_rhb": {"HR": 1.16, "2B": 0.92, "3B": 0.96, "1B": 0.99, "BB": 1.04, "K": 1.07}},
+    "Busch Stadium": {"factors_vs_lhb": {"HR": 0.89, "2B": 1.0, "3B": 0.79, "1B": 1.07, "BB": 0.95, "K": 0.92}, "factors_vs_rhb": {"HR": 0.85, "2B": 1.08, "3B": 0.83, "1B": 1.07, "BB": 0.97, "K": 0.91}},
+    "Chase Field": {"factors_vs_lhb": {"HR": 0.77, "2B": 1.1, "3B": 2.22, "1B": 1.03, "BB": 0.98, "K": 0.95}, "factors_vs_rhb": {"HR": 0.97, "2B": 1.18, "3B": 1.77, "1B": 1.03, "BB": 1.0, "K": 0.93}},
+    "Citi Field": {"factors_vs_lhb": {"HR": 0.98, "2B": 0.93, "3B": 0.63, "1B": 0.93, "BB": 1.1, "K": 1.03}, "factors_vs_rhb": {"HR": 1.09, "2B": 0.87, "3B": 0.83, "1B": 0.93, "BB": 1.1, "K": 1.02}},
+    "Citizens Bank Park": {"factors_vs_lhb": {"HR": 1.28, "2B": 0.93, "3B": 1.02, "1B": 0.97, "BB": 1.04, "K": 1.05}, "factors_vs_rhb": {"HR": 1.03, "2B": 0.99, "3B": 0.98, "1B": 1.0, "BB": 0.89, "K": 1.03}},
+    "Comerica Park": {"factors_vs_lhb": {"HR": 0.99, "2B": 0.91, "3B": 2.0, "1B": 1.01, "BB": 0.94, "K": 1.02}, "factors_vs_rhb": {"HR": 1.0, "2B": 0.97, "3B": 0.82, "1B": 0.99, "BB": 1.06, "K": 0.96}},
+    "Coors Field": {"factors_vs_lhb": {"HR": 1.05, "2B": 1.17, "3B": 1.73, "1B": 1.15, "BB": 1.1, "K": 0.92}, "factors_vs_rhb": {"HR": 1.06, "2B": 1.21, "3B": 2.34, "1B": 1.17, "BB": 0.93, "K": 0.9}},
+    "Daikin Park": {"factors_vs_lhb": {"HR": 1.1, "2B": 0.96, "3B": 1.06, "1B": 0.98, "BB": 1.06, "K": 1.05}, "factors_vs_rhb": {"HR": 1.03, "2B": 0.96, "3B": 0.77, "1B": 1.01, "BB": 0.96, "K": 1.01}},
+    "Dodger Stadium": {"factors_vs_lhb": {"HR": 1.19, "2B": 0.95, "3B": 0.62, "1B": 0.91, "BB": 0.96, "K": 1.02}, "factors_vs_rhb": {"HR": 1.35, "2B": 0.96, "3B": 0.67, "1B": 0.93, "BB": 1.06, "K": 0.98}},
+    "Fenway Park": {"factors_vs_lhb": {"HR": 0.87, "2B": 1.44, "3B": 0.94, "1B": 1.06, "BB": 0.98, "K": 0.89}, "factors_vs_rhb": {"HR": 0.9, "2B": 1.03, "3B": 0.96, "1B": 1.07, "BB": 0.96, "K": 1.04}},
+    # Placeholder fallback: 2025 Savant cache snapshot did not include this venue.
+    # BB/K remain neutral because they are not data-derived here.
     "George M. Steinbrenner Field": {"factors_vs_lhb": {"HR": 1.03, "2B": 1.01, "3B": 0.95, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.01, "2B": 1.01, "3B": 0.95, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Globe Life Field": {"factors_vs_lhb": {"HR": 0.98, "2B": 1.00, "3B": 0.91, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 0.99, "2B": 1.00, "3B": 0.91, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Great American Ball Park": {"factors_vs_lhb": {"HR": 1.14, "2B": 0.98, "3B": 0.84, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.16, "2B": 0.99, "3B": 0.84, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Kauffman Stadium": {"factors_vs_lhb": {"HR": 0.90, "2B": 1.07, "3B": 1.18, "1B": 1.02, "BB": 1.00, "K": 0.99}, "factors_vs_rhb": {"HR": 0.89, "2B": 1.06, "3B": 1.16, "1B": 1.02, "BB": 1.00, "K": 0.99}},
-    "loanDepot Park": {"factors_vs_lhb": {"HR": 0.92, "2B": 0.98, "3B": 0.92, "1B": 0.99, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 0.94, "2B": 0.99, "3B": 0.92, "1B": 0.99, "BB": 1.00, "K": 1.00}},
-    "Nationals Park": {"factors_vs_lhb": {"HR": 1.01, "2B": 1.00, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.02, "2B": 1.00, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Oriole Park at Camden Yards": {"factors_vs_lhb": {"HR": 0.95, "2B": 1.02, "3B": 0.88, "1B": 1.01, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 0.99, "2B": 1.03, "3B": 0.88, "1B": 1.01, "BB": 1.00, "K": 1.00}},
-    "Oracle Park": {"factors_vs_lhb": {"HR": 0.88, "2B": 1.02, "3B": 1.06, "1B": 1.01, "BB": 1.00, "K": 1.01}, "factors_vs_rhb": {"HR": 0.84, "2B": 1.02, "3B": 1.04, "1B": 1.01, "BB": 1.00, "K": 1.01}},
-    "Petco Park": {"factors_vs_lhb": {"HR": 0.92, "2B": 1.00, "3B": 0.92, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 0.90, "2B": 1.00, "3B": 0.92, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "PNC Park": {"factors_vs_lhb": {"HR": 0.93, "2B": 1.01, "3B": 1.02, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 0.90, "2B": 1.01, "3B": 1.02, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Progressive Field": {"factors_vs_lhb": {"HR": 0.99, "2B": 1.01, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.00, "2B": 1.01, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Rate Field": {"factors_vs_lhb": {"HR": 1.08, "2B": 0.99, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.10, "2B": 1.00, "3B": 0.90, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "Rogers Centre": {"factors_vs_lhb": {"HR": 1.07, "2B": 1.00, "3B": 0.88, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.08, "2B": 1.01, "3B": 0.88, "1B": 1.00, "BB": 1.00, "K": 1.00}},
+    "Globe Life Field": {"factors_vs_lhb": {"HR": 1.02, "2B": 0.99, "3B": 0.65, "1B": 0.98, "BB": 1.0, "K": 0.99}, "factors_vs_rhb": {"HR": 1.05, "2B": 0.93, "3B": 0.83, "1B": 0.96, "BB": 1.0, "K": 1.02}},
+    "Great American Ball Park": {"factors_vs_lhb": {"HR": 1.26, "2B": 0.99, "3B": 0.92, "1B": 0.95, "BB": 1.0, "K": 1.07}, "factors_vs_rhb": {"HR": 1.21, "2B": 0.99, "3B": 0.57, "1B": 0.96, "BB": 1.06, "K": 1.0}},
+    "Kauffman Stadium": {"factors_vs_lhb": {"HR": 0.73, "2B": 1.14, "3B": 1.81, "1B": 1.02, "BB": 1.03, "K": 0.88}, "factors_vs_rhb": {"HR": 0.93, "2B": 1.12, "3B": 1.86, "1B": 1.04, "BB": 0.97, "K": 0.9}},
+    "loanDepot Park": {"factors_vs_lhb": {"HR": 0.98, "2B": 1.04, "3B": 1.19, "1B": 1.09, "BB": 0.96, "K": 0.98}, "factors_vs_rhb": {"HR": 0.84, "2B": 1.09, "3B": 1.17, "1B": 1.02, "BB": 0.98, "K": 0.97}},
+    "Nationals Park": {"factors_vs_lhb": {"HR": 0.97, "2B": 1.0, "3B": 0.89, "1B": 1.11, "BB": 0.91, "K": 0.86}, "factors_vs_rhb": {"HR": 0.91, "2B": 0.96, "3B": 1.15, "1B": 1.06, "BB": 0.97, "K": 0.93}},
+    "Oracle Park": {"factors_vs_lhb": {"HR": 0.78, "2B": 1.02, "3B": 1.21, "1B": 1.04, "BB": 0.93, "K": 1.0}, "factors_vs_rhb": {"HR": 0.84, "2B": 1.02, "3B": 1.24, "1B": 1.04, "BB": 0.87, "K": 0.96}},
+    "Oriole Park at Camden Yards": {"factors_vs_lhb": {"HR": 1.25, "2B": 0.91, "3B": 0.94, "1B": 1.03, "BB": 0.93, "K": 0.97}, "factors_vs_rhb": {"HR": 0.87, "2B": 1.03, "3B": 1.61, "1B": 1.04, "BB": 0.88, "K": 1.01}},
+    "PNC Park": {"factors_vs_lhb": {"HR": 0.87, "2B": 1.21, "3B": 0.78, "1B": 0.98, "BB": 1.0, "K": 0.97}, "factors_vs_rhb": {"HR": 0.68, "2B": 1.1, "3B": 0.9, "1B": 1.05, "BB": 1.0, "K": 0.96}},
+    "Petco Park": {"factors_vs_lhb": {"HR": 0.9, "2B": 0.99, "3B": 0.57, "1B": 0.97, "BB": 1.04, "K": 0.99}, "factors_vs_rhb": {"HR": 1.13, "2B": 0.87, "3B": 0.74, "1B": 0.96, "BB": 1.03, "K": 1.04}},
+    "Progressive Field": {"factors_vs_lhb": {"HR": 0.93, "2B": 1.02, "3B": 0.51, "1B": 0.99, "BB": 0.95, "K": 0.97}, "factors_vs_rhb": {"HR": 0.75, "2B": 1.12, "3B": 1.08, "1B": 0.97, "BB": 1.06, "K": 1.06}},
+    "Rate Field": {"factors_vs_lhb": {"HR": 0.96, "2B": 0.88, "3B": 0.78, "1B": 1.02, "BB": 1.09, "K": 0.99}, "factors_vs_rhb": {"HR": 0.96, "2B": 0.94, "3B": 0.62, "1B": 1.0, "BB": 0.99, "K": 1.01}},
+    "Rogers Centre": {"factors_vs_lhb": {"HR": 1.02, "2B": 1.07, "3B": 0.78, "1B": 0.91, "BB": 0.99, "K": 1.07}, "factors_vs_rhb": {"HR": 1.05, "2B": 1.02, "3B": 0.62, "1B": 1.01, "BB": 1.01, "K": 0.91}},
+    # Placeholder fallback: 2025 Savant cache snapshot did not include this venue.
+    # BB/K remain neutral because they are not data-derived here.
     "Sutter Health Park": {"factors_vs_lhb": {"HR": 1.04, "2B": 1.02, "3B": 0.94, "1B": 1.01, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.04, "2B": 1.02, "3B": 0.94, "1B": 1.01, "BB": 1.00, "K": 1.00}},
-    "Target Field": {"factors_vs_lhb": {"HR": 1.00, "2B": 1.00, "3B": 0.92, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.01, "2B": 1.00, "3B": 0.92, "1B": 1.00, "BB": 1.00, "K": 1.00}},
-    "T-Mobile Park": {"factors_vs_lhb": {"HR": 0.94, "2B": 0.99, "3B": 0.90, "1B": 0.99, "BB": 1.00, "K": 1.01}, "factors_vs_rhb": {"HR": 0.92, "2B": 0.99, "3B": 0.90, "1B": 0.99, "BB": 1.00, "K": 1.01}},
-    "Truist Park": {"factors_vs_lhb": {"HR": 1.02, "2B": 1.00, "3B": 0.88, "1B": 1.00, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.03, "2B": 1.00, "3B": 0.88, "1B": 1.00, "BB": 1.00, "K": 1.00}},
+    "Target Field": {"factors_vs_lhb": {"HR": 1.02, "2B": 1.03, "3B": 0.94, "1B": 1.01, "BB": 1.0, "K": 1.06}, "factors_vs_rhb": {"HR": 1.02, "2B": 1.17, "3B": 1.03, "1B": 0.99, "BB": 1.0, "K": 1.01}},
+    "T-Mobile Park": {"factors_vs_lhb": {"HR": 0.95, "2B": 0.95, "3B": 0.48, "1B": 0.93, "BB": 0.93, "K": 1.15}, "factors_vs_rhb": {"HR": 0.91, "2B": 0.85, "3B": 0.57, "1B": 0.87, "BB": 1.0, "K": 1.18}},
+    "Truist Park": {"factors_vs_lhb": {"HR": 1.09, "2B": 0.89, "3B": 0.82, "1B": 1.06, "BB": 0.93, "K": 1.05}, "factors_vs_rhb": {"HR": 1.01, "2B": 0.98, "3B": 1.01, "1B": 1.02, "BB": 1.04, "K": 1.06}},
+    # Placeholder fallback: Tropicana Field was not a 2025 MLB home venue.
+    # BB/K remain neutral because they are not data-derived here.
     "Tropicana Field": {"factors_vs_lhb": {"HR": 0.91, "2B": 0.98, "3B": 0.90, "1B": 0.99, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 0.92, "2B": 0.98, "3B": 0.90, "1B": 0.99, "BB": 1.00, "K": 1.00}},
-    "Wrigley Field": {"factors_vs_lhb": {"HR": 1.02, "2B": 1.03, "3B": 1.06, "1B": 1.00, "BB": 1.00, "K": 0.99}, "factors_vs_rhb": {"HR": 1.03, "2B": 1.03, "3B": 1.05, "1B": 1.00, "BB": 1.00, "K": 0.99}},
-    "Yankee Stadium": {"factors_vs_lhb": {"HR": 1.20, "2B": 0.95, "3B": 0.80, "1B": 0.98, "BB": 1.00, "K": 1.00}, "factors_vs_rhb": {"HR": 1.05, "2B": 0.98, "3B": 0.85, "1B": 1.00, "BB": 1.00, "K": 1.00}},
+    "Wrigley Field": {"factors_vs_lhb": {"HR": 0.95, "2B": 0.91, "3B": 1.37, "1B": 1.0, "BB": 0.99, "K": 1.07}, "factors_vs_rhb": {"HR": 1.02, "2B": 0.83, "3B": 0.95, "1B": 0.97, "BB": 1.0, "K": 1.0}},
+    "Yankee Stadium": {"factors_vs_lhb": {"HR": 1.18, "2B": 0.91, "3B": 0.57, "1B": 0.91, "BB": 1.13, "K": 0.98}, "factors_vs_rhb": {"HR": 1.19, "2B": 0.89, "3B": 0.69, "1B": 0.91, "BB": 1.11, "K": 1.05}},
 }
 
 TEAM_TO_VENUE = {
@@ -86,6 +92,10 @@ TEAM_TO_VENUE = {
 }
 
 _NEUTRAL_FACTORS = {"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0}
+_VENUE_ALIASES = {
+    "UNIQLO Field at Dodger Stadium": "Dodger Stadium",
+    "loanDepot park": "loanDepot Park",
+}
 # Base URL returns combined ("All") factors; batSide=R/L returns handedness-specific factors.
 _SAVANT_URL = "https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year={season}"
 _SAVANT_URL_SIDE = "https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year={season}&batSide={bat_side}"
@@ -128,7 +138,7 @@ def _rows_to_venue_factors(rows: list[dict]) -> dict[str, dict[str, float]]:
     """
     factors: dict[str, dict[str, float]] = {}
     for row in rows:
-        venue_name = str(row.get("venue_name") or "").strip()
+        venue_name = _VENUE_ALIASES.get(str(row.get("venue_name") or "").strip(), str(row.get("venue_name") or "").strip())
         if not venue_name:
             continue
         factors[venue_name] = {
@@ -253,6 +263,7 @@ def fetch_park_factors(season: int) -> dict[str, dict[str, dict[str, float]]]:
 
 def get_park_factors(venue_name: str) -> ParkFactors:
     """Return park-factor multipliers for the given venue."""
+    venue_name = _VENUE_ALIASES.get(venue_name, venue_name)
     factors = fetch_park_factors(SEASON).get(venue_name)
     if factors is None:
         # Savant data may be incomplete early in the season — fall back to hardcoded table.

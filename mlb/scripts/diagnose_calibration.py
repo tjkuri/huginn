@@ -30,17 +30,19 @@ def _neutral_park() -> ParkFactors:
     )
 
 
-def _league_average_batter(player_id: str, hand: Hand) -> BatterStats:
-    rates = LEAGUE_AVERAGES[(hand, Hand.RIGHT if hand == Hand.LEFT else Hand.RIGHT)]
+def _league_average_batter(player_id: str, hand: Hand, pitcher_hand: Hand) -> BatterStats:
+    effective_hand = Hand.LEFT if hand == Hand.SWITCH and pitcher_hand == Hand.RIGHT else (
+        Hand.RIGHT if hand == Hand.SWITCH else hand
+    )
+    rates = LEAGUE_AVERAGES[(effective_hand, pitcher_hand)]
     return BatterStats(player_id=player_id, name=player_id, bats=hand, pa=600, rates=dict(rates))
 
 
-def _league_average_pitcher(player_id: str, throws: Hand) -> PitcherStats:
-    rates = (
-        LEAGUE_AVERAGES[(Hand.RIGHT, Hand.LEFT)]
-        if throws == Hand.LEFT
-        else LEAGUE_AVERAGES[(Hand.RIGHT, Hand.RIGHT)]
+def _league_average_pitcher(player_id: str, throws: Hand, batter_hand: Hand) -> PitcherStats:
+    effective_batter = Hand.LEFT if batter_hand == Hand.SWITCH and throws == Hand.RIGHT else (
+        Hand.RIGHT if batter_hand == Hand.SWITCH else batter_hand
     )
+    rates = LEAGUE_AVERAGES[(effective_batter, throws)]
     return PitcherStats(
         player_id=player_id,
         name=player_id,
@@ -56,16 +58,16 @@ def build_league_average_context() -> GameContext:
     away_lineup = Lineup(
         team_id="AWY",
         team_name="League Avg Away",
-        batting_order=[_league_average_batter(f"ab{i}", Hand.RIGHT) for i in range(1, 10)],
-        starting_pitcher=_league_average_pitcher("asp", Hand.RIGHT),
-        bullpen=[_league_average_pitcher("away-bullpen", Hand.RIGHT)],
+        batting_order=[_league_average_batter(f"ab{i}", Hand.RIGHT, Hand.RIGHT) for i in range(1, 10)],
+        starting_pitcher=_league_average_pitcher("asp", Hand.RIGHT, Hand.RIGHT),
+        bullpen=[_league_average_pitcher("away-bullpen", Hand.RIGHT, Hand.RIGHT)],
     )
     home_lineup = Lineup(
         team_id="HME",
         team_name="League Avg Home",
-        batting_order=[_league_average_batter(f"hb{i}", Hand.RIGHT) for i in range(1, 10)],
-        starting_pitcher=_league_average_pitcher("hsp", Hand.RIGHT),
-        bullpen=[_league_average_pitcher("home-bullpen", Hand.RIGHT)],
+        batting_order=[_league_average_batter(f"hb{i}", Hand.RIGHT, Hand.RIGHT) for i in range(1, 10)],
+        starting_pitcher=_league_average_pitcher("hsp", Hand.RIGHT, Hand.RIGHT),
+        bullpen=[_league_average_pitcher("home-bullpen", Hand.RIGHT, Hand.RIGHT)],
     )
     return GameContext(
         game_id="calibration",

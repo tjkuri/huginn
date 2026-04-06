@@ -12,6 +12,7 @@ from mlb.data.park_factors import get_park_factors, get_venue_for_team
 from mlb.data.stats import (
     build_batter_stats,
     build_pitcher_stats,
+    ensure_runtime_league_averages,
     fangraphs_team_code,
     fetch_team_bullpen_stats,
 )
@@ -32,31 +33,50 @@ def _normalize_name(name: str) -> str:
     return stripped
 
 
-def _league_average_batter(name: str, bats: str) -> dict:
-    hand = Hand.LEFT if str(bats).upper() == Hand.LEFT.value else Hand.RIGHT
+def _league_average_batter(name: str, bats: str, pitcher_throws: str | None = None) -> dict:
+    bats_text = str(bats).upper()
+    hand = Hand.LEFT if bats_text == Hand.LEFT.value else Hand.RIGHT
+    opposing_hand = Hand.LEFT if str(pitcher_throws).upper() == Hand.LEFT.value else Hand.RIGHT
+    effective_hand = Hand.LEFT if bats_text == Hand.SWITCH.value and opposing_hand == Hand.RIGHT else (
+        Hand.RIGHT if bats_text == Hand.SWITCH.value else hand
+    )
     return {
         "player_id": f"avg-batter-{_normalize_name(name) or 'unknown'}",
         "name": name or "League Average Batter",
         "bats": hand.value,
         "pa": 600,
-        "rates": dict(LEAGUE_AVERAGES[(hand, Hand.RIGHT)]),
+        "rates": dict(LEAGUE_AVERAGES[(effective_hand, opposing_hand)]),
         "source": "league_avg",
     }
 
 
-def _league_average_pitcher(name: str, throws: str) -> dict:
+def _league_average_pitcher(name: str, throws: str, batter_hand: str | None = None) -> dict:
     hand = Hand.LEFT if str(throws).upper() == Hand.LEFT.value else Hand.RIGHT
-    matchup_rates = (
-        LEAGUE_AVERAGES[(Hand.RIGHT, Hand.LEFT)]
-        if hand == Hand.LEFT
-        else LEAGUE_AVERAGES[(Hand.LEFT, Hand.RIGHT)]
-    )
+    effective_batter_hand = Hand.LEFT if str(batter_hand).upper() == Hand.LEFT.value else Hand.RIGHT
+    matchup_rates = LEAGUE_AVERAGES[(effective_batter_hand, hand)]
     return {
         "player_id": f"avg-pitcher-{_normalize_name(name) or 'unknown'}",
         "name": name or "League Average Pitcher",
         "throws": hand.value,
         "pa_against": 700,
         "rates": dict(matchup_rates),
+        "overall": {
+            "pa_against": 700,
+            "rates": dict(matchup_rates),
+            "source": "league_avg",
+        },
+        "splits": {
+            "vs_lhb": {
+                "pa_against": 350,
+                "rates": dict(LEAGUE_AVERAGES[(Hand.LEFT, hand)]),
+                "source": "league_avg",
+            },
+            "vs_rhb": {
+                "pa_against": 350,
+                "rates": dict(LEAGUE_AVERAGES[(Hand.RIGHT, hand)]),
+                "source": "league_avg",
+            },
+        },
         "avg_pitch_count": 85.0,
         "source": "league_avg",
     }
@@ -74,7 +94,7 @@ def _build_batting_order(
         stats = batting_data.get(_normalize_name(name))
         if stats is None:
             logger.warning("Missing batting data for %s; using league-average fallback", name)
-            stats = _league_average_batter(name, player.get("bats", "R"))
+            stats = _league_average_batter(name, player.get("bats", "R"), opposing_throws)
         elif stats.get("source") == str(SEASON - 1):
             logger.info("Using %s batting stats for %s", SEASON - 1, name)
 
@@ -105,6 +125,8 @@ def _build_pitcher(player: dict | None, pitching_data: dict[str, dict]):
         stats = _league_average_pitcher(name, player.get("throws", "R"))
     elif stats.get("source") == str(SEASON - 1):
         logger.info("Using %s pitching stats for %s", SEASON - 1, name)
+    else:
+        stats = dict(stats, throws=player.get("throws", stats.get("throws", "R")))
 
     pitcher = build_pitcher_stats(stats)
     pitcher.player_id = str(player.get("id") or pitcher.player_id)
@@ -206,6 +228,7 @@ def build_game_context(
     pitching_data: dict[str, dict],
 ) -> GameContext:
     """Build a complete simulation-ready GameContext from fetched data."""
+    ensure_runtime_league_averages(season=SEASON)
     lineup_info = _resolve_lineup(game_info)
     venue_name = game_info.get("venue") or get_venue_for_team(game_info.get("home_team", "")) or "Unknown Venue"
 

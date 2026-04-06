@@ -11,6 +11,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import requests
+
 from mlb.config import (
     CACHE_DIR,
     Hand,
@@ -26,15 +28,29 @@ _MIN_BATTER_PA = 50
 _MIN_PITCHER_IP = 20.0
 _MIN_SPLIT_BATTER_PA = 30
 _MIN_SPLIT_PITCHER_BF = 20
+_PRIOR_YEAR_BATTER_PA = 10
+_PRIOR_YEAR_PITCHER_IP = 5.0
 _AVG_PITCHES_PER_INNING = 16.0
 _EARLY_SEASON_BATTER_PA = 20
 _EARLY_SEASON_PITCHER_IP = 10.0
 _SPLIT_MONTH_VS_LEFT = 13
 _SPLIT_MONTH_VS_RIGHT = 14
+_FANGRAPHS_LEGACY_URL = "https://www.fangraphs.com/leaders-legacy.aspx"
+_FANGRAPHS_PAGE_SIZE = 30
+_MLB_PEOPLE_URL = "https://statsapi.mlb.com/api/v1/people"
+_FANGRAPHS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.fangraphs.com/",
+}
 
 _NAME_SUFFIX_RE = re.compile(r'\s+(jr|sr|ii|iii|iv)$')
 _TEAM_BULLPEN_CACHE: dict[tuple[int, bool], dict[str, dict[str, Any]]] = {}
 _COMPUTED_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[str, float]] = {}
+_MATCHUP_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[tuple[Hand, Hand], dict[str, float]]] = {}
+_PLAYER_HANDEDNESS_CACHE: dict[str, dict[str, str]] = {}
 _TEAM_TO_FG_CODE = {
     "Arizona Diamondbacks": "ARI",
     "Athletics": "ATH",
@@ -177,6 +193,14 @@ def _hand_from_value(value: Any, allow_switch: bool = False) -> Hand:
     return Hand.RIGHT
 
 
+def _is_valid_hand_code(value: Any, *, allow_switch: bool = False) -> bool:
+    text = str(value or "").strip().upper()
+    valid = {Hand.LEFT.value, Hand.RIGHT.value}
+    if allow_switch:
+        valid.add(Hand.SWITCH.value)
+    return text in valid
+
+
 def _season_date_today() -> date:
     return date.today()
 
@@ -204,14 +228,45 @@ def _normalize_rates(rates: dict[str, float]) -> dict[str, float]:
     return {key: value / total for key, value in sanitized.items()}
 
 
-def _league_average_rates_for_batter(hand: Hand) -> dict[str, float]:
-    return dict(LEAGUE_AVERAGES[(hand, Hand.RIGHT)])
+def _copy_league_averages(
+    source: dict[tuple[Hand, Hand], dict[str, float]] | None = None,
+) -> dict[tuple[Hand, Hand], dict[str, float]]:
+    baseline = source or LEAGUE_AVERAGES
+    return {key: dict(rates) for key, rates in baseline.items()}
 
 
-def _league_average_rates_for_pitcher(throws: Hand) -> dict[str, float]:
-    if throws == Hand.LEFT:
-        return dict(LEAGUE_AVERAGES[(Hand.RIGHT, Hand.LEFT)])
-    return dict(LEAGUE_AVERAGES[(Hand.LEFT, Hand.RIGHT)])
+def _league_average_rates_for_batter(hand: Hand, pitcher_hand: Hand) -> dict[str, float]:
+    return dict(LEAGUE_AVERAGES[(hand, pitcher_hand)])
+
+
+def _league_average_rates_for_pitcher(throws: Hand, batter_hand: Hand) -> dict[str, float]:
+    effective_batter_hand = _effective_batter_hand_for_pitcher(batter_hand, throws)
+    return dict(LEAGUE_AVERAGES[(effective_batter_hand, throws)])
+
+
+def _serialize_matchup_rates(
+    rates_by_matchup: dict[tuple[Hand, Hand], dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    return {f"{batter.value}_vs_{pitcher.value}": dict(rates) for (batter, pitcher), rates in rates_by_matchup.items()}
+
+
+def _deserialize_matchup_rates(payload: dict[str, dict[str, float]]) -> dict[tuple[Hand, Hand], dict[str, float]]:
+    matchup_rates: dict[tuple[Hand, Hand], dict[str, float]] = {}
+    for key, rates in payload.items():
+        batter_code, _, pitcher_code = key.partition("_vs_")
+        if not pitcher_code:
+            continue
+        matchup_rates[(Hand(batter_code), Hand(pitcher_code))] = dict(rates)
+    return matchup_rates
+
+
+def _apply_runtime_league_averages(rates_by_matchup: dict[tuple[Hand, Hand], dict[str, float]]) -> None:
+    for key, rates in rates_by_matchup.items():
+        LEAGUE_AVERAGES[key].clear()
+        LEAGUE_AVERAGES[key].update(dict(rates))
+
+
+_HARDCODED_LEAGUE_AVERAGES = _copy_league_averages()
 
 
 def _import_pybaseball():
@@ -229,6 +284,120 @@ def _import_pybaseball():
 
     cache.enable()
     return batting_stats, pitching_stats
+
+
+def _import_playerid_reverse_lookup():
+    try:
+        from pybaseball import playerid_reverse_lookup
+    except ImportError as exc:
+        raise ImportError(
+            "pybaseball is required for MLB stats fetching. Install it with "
+            "`venv/bin/pip install pybaseball`."
+        ) from exc
+    return playerid_reverse_lookup
+
+
+def _chunked(values: list[int], size: int) -> list[list[int]]:
+    return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+def _fetch_people_handedness(person_ids: list[int]) -> dict[str, dict[str, str]]:
+    handedness: dict[str, dict[str, str]] = {}
+    for batch in _chunked(person_ids, 50):
+        response = requests.get(
+            _MLB_PEOPLE_URL,
+            params={"personIds": ",".join(str(person_id) for person_id in batch)},
+            timeout=20,
+        )
+        response.raise_for_status()
+        people = response.json().get("people") or []
+        for person in people:
+            mlbam_id = str(person.get("id") or "").strip()
+            if not mlbam_id:
+                continue
+            handedness[mlbam_id] = {
+                "bats": str(((person.get("batSide") or {}).get("code")) or "").strip().upper(),
+                "throws": str(((person.get("pitchHand") or {}).get("code")) or "").strip().upper(),
+            }
+    return handedness
+
+
+def _resolve_player_handedness(players: dict[str, dict], *, role: str) -> dict[str, dict[str, str]]:
+    missing_fg_ids = sorted(
+        {
+            int(str(player.get("player_id") or "").strip())
+            for player in players.values()
+            if str(player.get("player_id") or "").strip().isdigit()
+            and str(player.get("player_id")) not in _PLAYER_HANDEDNESS_CACHE
+        }
+    )
+    if missing_fg_ids:
+        playerid_reverse_lookup = _import_playerid_reverse_lookup()
+        lookup = playerid_reverse_lookup(missing_fg_ids, key_type="fangraphs")
+        mlbam_ids: list[int] = []
+        fg_to_mlbam: dict[str, str] = {}
+        for row in _frame_to_records(lookup):
+            fg_id = str(_first_present(row, "key_fangraphs", default="")).strip()
+            mlbam_id = str(_first_present(row, "key_mlbam", default="")).strip()
+            if not fg_id or not mlbam_id:
+                continue
+            fg_to_mlbam[fg_id] = mlbam_id
+            mlbam_ids.append(int(mlbam_id))
+
+        mlbam_handedness = _fetch_people_handedness(sorted(set(mlbam_ids)))
+        for fg_id, mlbam_id in fg_to_mlbam.items():
+            info = mlbam_handedness.get(mlbam_id) or {}
+            _PLAYER_HANDEDNESS_CACHE[fg_id] = {
+                "bats": str(info.get("bats") or ""),
+                "throws": str(info.get("throws") or ""),
+            }
+
+    resolved: dict[str, dict[str, str]] = {}
+    for player in players.values():
+        fg_id = str(player.get("player_id") or "").strip()
+        if not fg_id:
+            continue
+        info = _PLAYER_HANDEDNESS_CACHE.get(fg_id) or {}
+        hand_value = str(info.get("bats" if role == "batter" else "throws") or "").strip().upper()
+        if hand_value:
+            resolved[fg_id] = info
+    return resolved
+
+
+def _enrich_batter_handedness(players: dict[str, dict], season: int, kind: str) -> dict[str, dict]:
+    needs_enrichment = any(not _is_valid_hand_code(player.get("bats"), allow_switch=True) for player in players.values())
+    if not needs_enrichment:
+        return players
+
+    handedness = _resolve_player_handedness(players, role="batter")
+    updated = False
+    for player in players.values():
+        fg_id = str(player.get("player_id") or "").strip()
+        bats = str((handedness.get(fg_id) or {}).get("bats") or "").strip().upper()
+        if _is_valid_hand_code(bats, allow_switch=True):
+            player["bats"] = bats
+            updated = True
+    if updated:
+        _save_raw_cache(kind, season, players)
+    return players
+
+
+def _enrich_pitcher_handedness(players: dict[str, dict], season: int, kind: str) -> dict[str, dict]:
+    needs_enrichment = any(not _is_valid_hand_code(player.get("throws")) for player in players.values())
+    if not needs_enrichment:
+        return players
+
+    handedness = _resolve_player_handedness(players, role="pitcher")
+    updated = False
+    for player in players.values():
+        fg_id = str(player.get("player_id") or "").strip()
+        throws = str((handedness.get(fg_id) or {}).get("throws") or "").strip().upper()
+        if _is_valid_hand_code(throws):
+            player["throws"] = throws
+            updated = True
+    if updated:
+        _save_raw_cache(kind, season, players)
+    return players
 
 
 def _frame_to_records(frame: Any) -> list[dict[str, Any]]:
@@ -296,8 +465,12 @@ def _extract_batter_rates(row: dict[str, Any]) -> dict[str, float]:
     singles = _safe_float(_first_present(row, "1B", default=hits - doubles - triples - hr))
     hbp = _safe_float(_first_present(row, "HBP"))
     # pybaseball returns K% and BB% as decimals (e.g. 0.182), not percentages
-    k_rate = _safe_float(_first_present(row, "K%", "SO%", "K_pct"))
-    bb_rate = _safe_float(_first_present(row, "BB%", "BB_pct"))
+    k_rate = _safe_float(_first_present(row, "K%", "SO%", "K_pct", default=-1.0), default=-1.0)
+    bb_rate = _safe_float(_first_present(row, "BB%", "BB_pct", default=-1.0), default=-1.0)
+    if k_rate < 0:
+        k_rate = _safe_float(_first_present(row, "SO", "K")) / pa
+    if bb_rate < 0:
+        bb_rate = _safe_float(_first_present(row, "BB")) / pa
 
     return _normalize_rates(
         {
@@ -508,7 +681,7 @@ def _fetch_batting_season_raw(
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return cached
+            return _enrich_batter_handedness(cached, season, kind)
 
     fetch_kwargs: dict[str, Any] = {"qual": 1}
     if month is not None:
@@ -522,6 +695,7 @@ def _fetch_batting_season_raw(
             continue
         players[_normalize_name(player["name"])] = player
 
+    players = _enrich_batter_handedness(players, season, kind)
     _save_raw_cache(kind, season, players)
     return players
 
@@ -538,7 +712,7 @@ def _fetch_pitching_season_raw(
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return cached
+            return _enrich_pitcher_handedness(cached, season, kind)
 
     fetch_kwargs: dict[str, Any] = {"qual": 1}
     if month is not None:
@@ -552,6 +726,144 @@ def _fetch_pitching_season_raw(
             continue
         players[_normalize_name(player["name"])] = player
 
+    players = _enrich_pitcher_handedness(players, season, kind)
+    _save_raw_cache(kind, season, players)
+    return players
+
+
+def _fangraphs_split_query_params(
+    *,
+    stats: str,
+    season: int,
+    split_month: int,
+    page: int,
+) -> dict[str, Any]:
+    return {
+        "pos": "all",
+        "stats": stats,
+        "lg": "all",
+        "qual": 1,
+        "type": 0,
+        "season": season,
+        "month": split_month,
+        "season1": season,
+        "ind": 0,
+        "team": 0,
+        "rost": 0,
+        "age": 0,
+        "filter": "",
+        "players": 0,
+        "startdate": "",
+        "enddate": "",
+        "page": f"{page}_{_FANGRAPHS_PAGE_SIZE}",
+    }
+
+
+def _extract_total_pages_from_fangraphs_html(html: str) -> int:
+    pages = [int(match) for match in re.findall(r"page=(\d+)_30", html)]
+    return max(pages, default=1)
+
+
+def _fetch_fangraphs_split_frame(
+    season: int,
+    split_month: int,
+    *,
+    stats: str,
+) -> Any:
+    if stats == "bat":
+        from pybaseball.datasources.fangraphs import FangraphsBattingStatsTable
+
+        table = FangraphsBattingStatsTable()
+    else:
+        from pybaseball.datasources.fangraphs import FangraphsPitchingStatsTable
+
+        table = FangraphsPitchingStatsTable()
+
+    all_frames = []
+    total_pages = 1
+    page = 1
+    while page <= total_pages:
+        response = requests.get(
+            _FANGRAPHS_LEGACY_URL,
+            params=_fangraphs_split_query_params(
+                stats=stats,
+                season=season,
+                split_month=split_month,
+                page=page,
+            ),
+            headers=_FANGRAPHS_HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+        if page == 1:
+            total_pages = _extract_total_pages_from_fangraphs_html(response.text)
+        frame = table.html_accessor.get_tabular_data_from_html(
+            response.content,
+            column_name_mapper=table.COLUMN_NAME_MAPPER,
+            known_percentages=table.KNOWN_PERCENTAGES,
+            row_id_func=table.ROW_ID_FUNC,
+            row_id_name=table.ROW_ID_NAME,
+        )
+        if not frame.empty:
+            all_frames.append(frame)
+        page += 1
+
+    if not all_frames:
+        raise ValueError(f"Fangraphs returned no split rows for {stats} season={season} month={split_month}")
+
+    import pandas as pd
+
+    return pd.concat(all_frames, ignore_index=True).drop_duplicates(subset=["IDfg"], keep="first")
+
+
+def _fetch_batting_split_raw(
+    season: int,
+    split_month: int,
+    use_cache: bool,
+    *,
+    kind: str,
+    split_type: str,
+) -> dict[str, dict]:
+    if use_cache:
+        cached = _load_raw_cache(kind, season)
+        if cached is not None:
+            return _enrich_batter_handedness(cached, season, kind)
+
+    frame = _fetch_fangraphs_split_frame(season, split_month, stats="bat")
+    players: dict[str, dict] = {}
+    for row in _frame_to_records(frame):
+        player = _build_batter_player(row, season, source=f"{season}_split", split_type=split_type)
+        if player is None:
+            continue
+        players[_normalize_name(player["name"])] = player
+
+    players = _enrich_batter_handedness(players, season, kind)
+    _save_raw_cache(kind, season, players)
+    return players
+
+
+def _fetch_pitching_split_raw(
+    season: int,
+    split_month: int,
+    use_cache: bool,
+    *,
+    kind: str,
+    split_type: str,
+) -> dict[str, dict]:
+    if use_cache:
+        cached = _load_raw_cache(kind, season)
+        if cached is not None:
+            return _enrich_pitcher_handedness(cached, season, kind)
+
+    frame = _fetch_fangraphs_split_frame(season, split_month, stats="pit")
+    players: dict[str, dict] = {}
+    for row in _frame_to_records(frame):
+        player = _build_pitcher_player(row, season, source=f"{season}_split", split_type=split_type)
+        if player is None:
+            continue
+        players[_normalize_name(player["name"])] = player
+
+    players = _enrich_pitcher_handedness(players, season, kind)
     _save_raw_cache(kind, season, players)
     return players
 
@@ -581,7 +893,7 @@ def _merge_batter_player(
     overall = None
     if current_overall and _safe_int(current_overall.get("pa")) >= threshold:
         overall = dict(current_overall)
-    elif prior_overall:
+    elif prior_overall and _safe_int(prior_overall.get("pa")) >= _PRIOR_YEAR_BATTER_PA:
         overall = dict(prior_overall)
     if overall is None:
         return None
@@ -628,7 +940,7 @@ def _merge_pitcher_player(
     overall = None
     if current_overall and _safe_float(current_overall.get("ip")) >= threshold:
         overall = dict(current_overall)
-    elif prior_overall:
+    elif prior_overall and _safe_float(prior_overall.get("ip")) >= _PRIOR_YEAR_PITCHER_IP:
         overall = dict(prior_overall)
     if overall is None:
         return None
@@ -668,19 +980,41 @@ def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[s
     batting_stats, _ = _import_pybaseball()
     current_players = _fetch_batting_season_raw(season, batting_stats, use_cache)
     prior_players = _fetch_batting_season_raw(season - 1, batting_stats, use_cache)
-    # NOTE: leave the split-aware merge/selection pipeline in place for a future
-    # supported split source. FanGraphs `month=13/14` currently fails both in
-    # pybaseball's FangraphsMonth enum validation and as a live leaderboard
-    # request, so we intentionally skip those requests for now and fall back to
-    # overall rates downstream.
-    # current_vs_lhp = _fetch_batting_season_raw(..., month=_SPLIT_MONTH_VS_LEFT, ...)
-    # prior_vs_lhp = _fetch_batting_season_raw(..., month=_SPLIT_MONTH_VS_LEFT, ...)
-    # current_vs_rhp = _fetch_batting_season_raw(..., month=_SPLIT_MONTH_VS_RIGHT, ...)
-    # prior_vs_rhp = _fetch_batting_season_raw(..., month=_SPLIT_MONTH_VS_RIGHT, ...)
-    current_vs_lhp: dict[str, dict] = {}
-    prior_vs_lhp: dict[str, dict] = {}
-    current_vs_rhp: dict[str, dict] = {}
-    prior_vs_rhp: dict[str, dict] = {}
+    try:
+        current_vs_lhp = _fetch_batting_split_raw(
+            season,
+            _SPLIT_MONTH_VS_LEFT,
+            use_cache,
+            kind="batting_vs_lhp",
+            split_type="vs_lhp",
+        )
+        prior_vs_lhp = _fetch_batting_split_raw(
+            season - 1,
+            _SPLIT_MONTH_VS_LEFT,
+            use_cache,
+            kind="batting_vs_lhp",
+            split_type="vs_lhp",
+        )
+        current_vs_rhp = _fetch_batting_split_raw(
+            season,
+            _SPLIT_MONTH_VS_RIGHT,
+            use_cache,
+            kind="batting_vs_rhp",
+            split_type="vs_rhp",
+        )
+        prior_vs_rhp = _fetch_batting_split_raw(
+            season - 1,
+            _SPLIT_MONTH_VS_RIGHT,
+            use_cache,
+            kind="batting_vs_rhp",
+            split_type="vs_rhp",
+        )
+    except Exception as exc:
+        logger.warning("Batting split fetch failed for %d (%s); using overall-only batting profiles", season, exc)
+        current_vs_lhp = {}
+        prior_vs_lhp = {}
+        current_vs_rhp = {}
+        prior_vs_rhp = {}
     players: dict[str, dict] = {}
     threshold = _batting_threshold_for_season(season)
 
@@ -712,18 +1046,41 @@ def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[
     _, pitching_stats = _import_pybaseball()
     current_players = _fetch_pitching_season_raw(season, pitching_stats, use_cache)
     prior_players = _fetch_pitching_season_raw(season - 1, pitching_stats, use_cache)
-    # NOTE: keep the split-profile plumbing intact so a future supported source
-    # can populate these fields. For now we intentionally skip the unsupported
-    # FanGraphs `month=13/14` requests and let the engine fall back to overall
-    # pitcher rates when no split is present.
-    # current_vs_lhb = _fetch_pitching_season_raw(..., month=_SPLIT_MONTH_VS_LEFT, ...)
-    # prior_vs_lhb = _fetch_pitching_season_raw(..., month=_SPLIT_MONTH_VS_LEFT, ...)
-    # current_vs_rhb = _fetch_pitching_season_raw(..., month=_SPLIT_MONTH_VS_RIGHT, ...)
-    # prior_vs_rhb = _fetch_pitching_season_raw(..., month=_SPLIT_MONTH_VS_RIGHT, ...)
-    current_vs_lhb: dict[str, dict] = {}
-    prior_vs_lhb: dict[str, dict] = {}
-    current_vs_rhb: dict[str, dict] = {}
-    prior_vs_rhb: dict[str, dict] = {}
+    try:
+        current_vs_lhb = _fetch_pitching_split_raw(
+            season,
+            _SPLIT_MONTH_VS_LEFT,
+            use_cache,
+            kind="pitching_vs_lhb",
+            split_type="vs_lhb",
+        )
+        prior_vs_lhb = _fetch_pitching_split_raw(
+            season - 1,
+            _SPLIT_MONTH_VS_LEFT,
+            use_cache,
+            kind="pitching_vs_lhb",
+            split_type="vs_lhb",
+        )
+        current_vs_rhb = _fetch_pitching_split_raw(
+            season,
+            _SPLIT_MONTH_VS_RIGHT,
+            use_cache,
+            kind="pitching_vs_rhb",
+            split_type="vs_rhb",
+        )
+        prior_vs_rhb = _fetch_pitching_split_raw(
+            season - 1,
+            _SPLIT_MONTH_VS_RIGHT,
+            use_cache,
+            kind="pitching_vs_rhb",
+            split_type="vs_rhb",
+        )
+    except Exception as exc:
+        logger.warning("Pitching split fetch failed for %d (%s); using overall-only pitching profiles", season, exc)
+        current_vs_lhb = {}
+        prior_vs_lhb = {}
+        current_vs_rhb = {}
+        prior_vs_rhb = {}
     players: dict[str, dict] = {}
     threshold = _pitching_threshold_for_season(season)
 
@@ -750,6 +1107,70 @@ def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[
     return players
 
 
+def compute_matchup_league_averages(batting_players: dict[str, dict]) -> dict[tuple[Hand, Hand], dict[str, float]]:
+    """Aggregate handedness matchup baselines from batter split profiles."""
+    totals: dict[tuple[Hand, Hand], dict[str, float]] = {
+        (Hand.LEFT, Hand.RIGHT): {"PA": 0.0},
+        (Hand.RIGHT, Hand.LEFT): {"PA": 0.0},
+        (Hand.LEFT, Hand.LEFT): {"PA": 0.0},
+        (Hand.RIGHT, Hand.RIGHT): {"PA": 0.0},
+    }
+    tracked_outcomes = ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+
+    for player in batting_players.values():
+        bats = _hand_from_value(player.get("bats"), allow_switch=True)
+        splits = player.get("splits") or {}
+        for pitcher_hand, split_key in ((Hand.LEFT, "vs_lhp"), (Hand.RIGHT, "vs_rhp")):
+            split = splits.get(split_key)
+            if split is None:
+                continue
+            pa = _safe_float(split.get("pa"))
+            rates = split.get("rates") or {}
+            if pa <= 0 or not rates:
+                continue
+            effective_bats = _effective_batter_hand_for_pitcher(bats, pitcher_hand)
+            matchup_key = (effective_bats, pitcher_hand)
+            matchup_totals = totals[matchup_key]
+            matchup_totals["PA"] += pa
+            for outcome in tracked_outcomes:
+                matchup_totals[outcome] = matchup_totals.get(outcome, 0.0) + (pa * _safe_float(rates.get(outcome)))
+
+    matchup_rates: dict[tuple[Hand, Hand], dict[str, float]] = {}
+    for matchup_key, matchup_totals in totals.items():
+        total_pa = matchup_totals.get("PA", 0.0)
+        if total_pa <= 0:
+            raise ValueError(f"Unable to compute matchup league average for {matchup_key}: no split PA")
+        rates = {
+            outcome: matchup_totals.get(outcome, 0.0) / total_pa
+            for outcome in tracked_outcomes
+        }
+        matchup_rates[matchup_key] = _normalize_rates(dict(rates, OUT=0.0))
+    return matchup_rates
+
+
+def compute_matchup_league_averages_from_raw_splits(
+    overall_batters: dict[str, dict],
+    vs_lhp_batters: dict[str, dict],
+    vs_rhp_batters: dict[str, dict],
+) -> dict[tuple[Hand, Hand], dict[str, float]]:
+    split_profiles: dict[str, dict] = {}
+    for name, overall in overall_batters.items():
+        profile = dict(overall)
+        profile["splits"] = {}
+        if name in vs_lhp_batters:
+            profile["splits"]["vs_lhp"] = {
+                "pa": _safe_int(vs_lhp_batters[name].get("pa")),
+                "rates": dict(vs_lhp_batters[name].get("rates") or {}),
+            }
+        if name in vs_rhp_batters:
+            profile["splits"]["vs_rhp"] = {
+                "pa": _safe_int(vs_rhp_batters[name].get("pa")),
+                "rates": dict(vs_rhp_batters[name].get("rates") or {}),
+            }
+        split_profiles[name] = profile
+    return compute_matchup_league_averages(split_profiles)
+
+
 def fetch_computed_league_averages(season: int = SEASON, use_cache: bool = True) -> dict[str, float]:
     """Fetch and cache overall league averages computed from raw pybaseball leaderboards."""
     cache_key = (season, use_cache)
@@ -761,6 +1182,9 @@ def fetch_computed_league_averages(season: int = SEASON, use_cache: bool = True)
         payload = _load_computed_cache("league_averages", season)
         if payload is not None and "rates" in payload:
             rates = dict(payload["rates"])
+            matchup_rates = payload.get("matchup_rates")
+            if isinstance(matchup_rates, dict):
+                _MATCHUP_LEAGUE_AVERAGE_CACHE[cache_key] = _deserialize_matchup_rates(matchup_rates)
             _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = rates
             return rates
 
@@ -768,9 +1192,99 @@ def fetch_computed_league_averages(season: int = SEASON, use_cache: bool = True)
     batting_df = batting_stats(season, qual=1)
     pitching_df = pitching_stats(season, qual=1)
     rates = compute_league_averages(batting_df, pitching_df)
-    _save_computed_cache("league_averages", season, {"season": season, "rates": rates})
+    overall_batters = _fetch_batting_season_raw(season, batting_stats, use_cache)
+    vs_lhp_batters = _fetch_batting_split_raw(
+        season,
+        _SPLIT_MONTH_VS_LEFT,
+        use_cache,
+        kind="batting_vs_lhp",
+        split_type="vs_lhp",
+    )
+    vs_rhp_batters = _fetch_batting_split_raw(
+        season,
+        _SPLIT_MONTH_VS_RIGHT,
+        use_cache,
+        kind="batting_vs_rhp",
+        split_type="vs_rhp",
+    )
+    matchup_rates = compute_matchup_league_averages_from_raw_splits(
+        overall_batters,
+        vs_lhp_batters,
+        vs_rhp_batters,
+    )
+    _save_computed_cache(
+        "league_averages",
+        season,
+        {
+            "season": season,
+            "rates": rates,
+            "matchup_rates": _serialize_matchup_rates(matchup_rates),
+        },
+    )
+    _MATCHUP_LEAGUE_AVERAGE_CACHE[cache_key] = matchup_rates
     _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = rates
     return rates
+
+
+def fetch_runtime_league_averages(
+    season: int = SEASON,
+    use_cache: bool = True,
+) -> dict[tuple[Hand, Hand], dict[str, float]]:
+    """Fetch matchup league averages with cache->network->hardcoded fallback."""
+    cache_key = (season, use_cache)
+    cached = _MATCHUP_LEAGUE_AVERAGE_CACHE.get(cache_key)
+    if cached is not None:
+        return _copy_league_averages(cached)
+
+    hardcoded = _copy_league_averages(_HARDCODED_LEAGUE_AVERAGES)
+
+    if use_cache:
+        payload = _load_computed_cache("league_averages", season)
+        if payload is not None and "matchup_rates" in payload:
+            matchup_rates = _deserialize_matchup_rates(dict(payload["matchup_rates"]))
+            _MATCHUP_LEAGUE_AVERAGE_CACHE[cache_key] = matchup_rates
+            _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = dict(payload.get("rates") or {})
+            return _copy_league_averages(matchup_rates)
+
+    try:
+        fetch_computed_league_averages(season=season, use_cache=False)
+        fresh_key = (season, False)
+        matchup_rates = _MATCHUP_LEAGUE_AVERAGE_CACHE[fresh_key]
+        _MATCHUP_LEAGUE_AVERAGE_CACHE[cache_key] = _copy_league_averages(matchup_rates)
+        if fresh_key in _COMPUTED_LEAGUE_AVERAGE_CACHE:
+            _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = dict(_COMPUTED_LEAGUE_AVERAGE_CACHE[fresh_key])
+        return _copy_league_averages(matchup_rates)
+    except Exception as exc:
+        if use_cache:
+            stale_payload = _computed_cache_path("league_averages", season)
+            if stale_payload.exists():
+                with open(stale_payload) as f:
+                    payload = json.load(f)
+                matchup_rates = payload.get("matchup_rates")
+                if isinstance(matchup_rates, dict):
+                    logger.warning(
+                        "League averages fetch failed for %d (%s); using cached computed league averages",
+                        season,
+                        exc,
+                    )
+                    parsed = _deserialize_matchup_rates(matchup_rates)
+                    _MATCHUP_LEAGUE_AVERAGE_CACHE[cache_key] = parsed
+                    _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = dict(payload.get("rates") or {})
+                    return _copy_league_averages(parsed)
+
+        logger.warning(
+            "League averages fetch failed for %d (%s); using hardcoded fallback constants",
+            season,
+            exc,
+        )
+        return hardcoded
+
+
+def ensure_runtime_league_averages(season: int = SEASON, use_cache: bool = True) -> dict[tuple[Hand, Hand], dict[str, float]]:
+    """Refresh the global league-average mapping in place right before simulation context build."""
+    matchup_rates = fetch_runtime_league_averages(season=season, use_cache=use_cache)
+    _apply_runtime_league_averages(matchup_rates)
+    return matchup_rates
 
 
 def fetch_team_bullpen_stats(season: int = SEASON, use_cache: bool = True) -> dict[str, dict[str, Any]]:
@@ -807,13 +1321,17 @@ def _select_batter_rates(
     use_overall: bool = False,
 ) -> tuple[dict[str, float], int, str]:
     overall = dict(player_data.get("overall") or {})
-    default_rates = dict(player_data.get("rates") or overall.get("rates") or _league_average_rates_for_batter(bats))
+    pitcher_throws = _hand_from_value(pitcher_hand) if pitcher_hand is not None else Hand.RIGHT
+    default_rates = dict(
+        player_data.get("rates")
+        or overall.get("rates")
+        or _league_average_rates_for_batter(_effective_batter_hand_for_pitcher(bats, pitcher_throws), pitcher_throws)
+    )
     default_pa = _safe_int(player_data.get("pa") or overall.get("pa"), 0)
     default_source = str(player_data.get("source") or overall.get("source") or "unknown")
     if use_overall or pitcher_hand is None:
         return default_rates, default_pa, default_source
 
-    pitcher_throws = _hand_from_value(pitcher_hand)
     split_key = "vs_lhp" if pitcher_throws == Hand.LEFT else "vs_rhp"
     split = (player_data.get("splits") or {}).get(split_key)
     if split is None:
@@ -829,13 +1347,20 @@ def _select_pitcher_rates(
     use_overall: bool = False,
 ) -> tuple[dict[str, float], int, str]:
     overall = dict(player_data.get("overall") or {})
-    default_rates = dict(player_data.get("rates") or overall.get("rates") or _league_average_rates_for_pitcher(throws))
+    effective_batter_hand = _effective_batter_hand_for_pitcher(
+        batter_hand if batter_hand is not None else Hand.RIGHT,
+        throws,
+    )
+    default_rates = dict(
+        player_data.get("rates")
+        or overall.get("rates")
+        or _league_average_rates_for_pitcher(throws, effective_batter_hand)
+    )
     default_pa = _safe_int(player_data.get("pa_against") or overall.get("pa_against"), 0)
     default_source = str(player_data.get("source") or overall.get("source") or "unknown")
     if use_overall or batter_hand is None:
         return default_rates, default_pa, default_source
 
-    effective_batter_hand = _effective_batter_hand_for_pitcher(batter_hand, throws)
     split_key = "vs_lhb" if effective_batter_hand == Hand.LEFT else "vs_rhb"
     split = (player_data.get("splits") or {}).get(split_key)
     if split is None:

@@ -184,7 +184,7 @@ class TestParkFactors:
 
         factors = __import__("mlb.data.park_factors", fromlist=["fetch_park_factors"]).fetch_park_factors(2025)
         assert "Yankee Stadium" in factors
-        assert factors["Yankee Stadium"]["factors_vs_lhb"]["HR"] == pytest.approx(1.20)
+        assert factors["Yankee Stadium"]["factors_vs_lhb"]["HR"] == pytest.approx(1.18)
 
 
 class TestLeagueAverageComputation:
@@ -253,6 +253,7 @@ class TestFetchBattingSplits:
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (lambda season, **kwargs: FakeFrame(), None))
+        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
 
         data = fetch_batting_splits(use_cache=False)
         player = data["sample batter"]
@@ -285,6 +286,7 @@ class TestFetchBattingSplits:
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
+        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
 
         def fake_batting_stats(season, **kwargs):
             assert "month" not in kwargs
@@ -354,6 +356,7 @@ class TestFetchPitchingSplits:
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
+        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
 
         def fake_pitching_stats(season, **kwargs):
             assert "month" not in kwargs
@@ -383,6 +386,7 @@ class TestFetchPitchingSplits:
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (None, lambda season, **kwargs: FakeFrame(rows)))
+        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
 
         data = fetch_pitching_splits(season=2026, use_cache=False)
         assert data["sample pitcher"]["splits"] == {}
@@ -474,6 +478,7 @@ class TestBuildGameContext:
         }
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: lineup)
+        monkeypatch.setattr("mlb.data.builder.ensure_runtime_league_averages", lambda season=2026: None)
         monkeypatch.setattr(
             "mlb.data.builder.fetch_team_bullpen_stats",
             lambda season=2026: {
@@ -563,6 +568,7 @@ class TestBuildGameContext:
         }
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: lineup)
+        monkeypatch.setattr("mlb.data.builder.ensure_runtime_league_averages", lambda season=2026: None)
         monkeypatch.setattr("mlb.data.builder.fetch_team_bullpen_stats", lambda season=2026: {})
         monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "")
         monkeypatch.setattr(
@@ -619,3 +625,31 @@ class TestNormalizeName:
         from mlb.data.stats import _normalize_name as stats_norm
         from mlb.data.builder import _normalize_name as builder_norm
         assert stats_norm("Agustín Ramírez") == builder_norm("agustin ramirez")
+
+
+class TestLeagueAverageFallbacks:
+    def test_league_average_batter_uses_pitcher_hand(self):
+        from mlb.data.builder import _league_average_batter
+        from mlb.config import LEAGUE_AVERAGES
+
+        batter = _league_average_batter("Switch Sample", "S", "L")
+        assert batter["rates"] == LEAGUE_AVERAGES[(Hand.RIGHT, Hand.LEFT)]
+
+    def test_extract_batter_rates_uses_count_columns_when_percentages_missing(self):
+        from mlb.data.stats import _extract_batter_rates
+
+        rates = _extract_batter_rates(
+            {
+                "PA": 100,
+                "H": 25,
+                "2B": 5,
+                "3B": 1,
+                "HR": 4,
+                "HBP": 2,
+                "SO": 20,
+                "BB": 10,
+            }
+        )
+
+        assert rates["K"] == pytest.approx(0.20)
+        assert rates["BB"] == pytest.approx(0.10)
