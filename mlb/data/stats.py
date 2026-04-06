@@ -664,42 +664,23 @@ def _merge_pitcher_player(
 
 
 def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
-    """Fetch season batting stats plus handedness splits and convert them to per-PA rates."""
+    """Fetch season batting stats and merge in handedness splits when supported."""
     batting_stats, _ = _import_pybaseball()
     current_players = _fetch_batting_season_raw(season, batting_stats, use_cache)
     prior_players = _fetch_batting_season_raw(season - 1, batting_stats, use_cache)
-    current_vs_lhp = _fetch_batting_season_raw(
-        season,
-        batting_stats,
-        use_cache,
-        kind="batting_vs_lhp",
-        month=_SPLIT_MONTH_VS_LEFT,
-        split_type="vs_lhp",
-    )
-    prior_vs_lhp = _fetch_batting_season_raw(
-        season - 1,
-        batting_stats,
-        use_cache,
-        kind="batting_vs_lhp",
-        month=_SPLIT_MONTH_VS_LEFT,
-        split_type="vs_lhp",
-    )
-    current_vs_rhp = _fetch_batting_season_raw(
-        season,
-        batting_stats,
-        use_cache,
-        kind="batting_vs_rhp",
-        month=_SPLIT_MONTH_VS_RIGHT,
-        split_type="vs_rhp",
-    )
-    prior_vs_rhp = _fetch_batting_season_raw(
-        season - 1,
-        batting_stats,
-        use_cache,
-        kind="batting_vs_rhp",
-        month=_SPLIT_MONTH_VS_RIGHT,
-        split_type="vs_rhp",
-    )
+    # NOTE: leave the split-aware merge/selection pipeline in place for a future
+    # supported split source. FanGraphs `month=13/14` currently fails both in
+    # pybaseball's FangraphsMonth enum validation and as a live leaderboard
+    # request, so we intentionally skip those requests for now and fall back to
+    # overall rates downstream.
+    # current_vs_lhp = _fetch_batting_season_raw(..., month=_SPLIT_MONTH_VS_LEFT, ...)
+    # prior_vs_lhp = _fetch_batting_season_raw(..., month=_SPLIT_MONTH_VS_LEFT, ...)
+    # current_vs_rhp = _fetch_batting_season_raw(..., month=_SPLIT_MONTH_VS_RIGHT, ...)
+    # prior_vs_rhp = _fetch_batting_season_raw(..., month=_SPLIT_MONTH_VS_RIGHT, ...)
+    current_vs_lhp: dict[str, dict] = {}
+    prior_vs_lhp: dict[str, dict] = {}
+    current_vs_rhp: dict[str, dict] = {}
+    prior_vs_rhp: dict[str, dict] = {}
     players: dict[str, dict] = {}
     threshold = _batting_threshold_for_season(season)
 
@@ -727,42 +708,22 @@ def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[s
 
 
 def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
-    """Fetch season pitching stats plus handedness splits and convert them to per-batter-faced rates."""
+    """Fetch season pitching stats and merge in handedness splits when supported."""
     _, pitching_stats = _import_pybaseball()
     current_players = _fetch_pitching_season_raw(season, pitching_stats, use_cache)
     prior_players = _fetch_pitching_season_raw(season - 1, pitching_stats, use_cache)
-    current_vs_lhb = _fetch_pitching_season_raw(
-        season,
-        pitching_stats,
-        use_cache,
-        kind="pitching_vs_lhb",
-        month=_SPLIT_MONTH_VS_LEFT,
-        split_type="vs_lhb",
-    )
-    prior_vs_lhb = _fetch_pitching_season_raw(
-        season - 1,
-        pitching_stats,
-        use_cache,
-        kind="pitching_vs_lhb",
-        month=_SPLIT_MONTH_VS_LEFT,
-        split_type="vs_lhb",
-    )
-    current_vs_rhb = _fetch_pitching_season_raw(
-        season,
-        pitching_stats,
-        use_cache,
-        kind="pitching_vs_rhb",
-        month=_SPLIT_MONTH_VS_RIGHT,
-        split_type="vs_rhb",
-    )
-    prior_vs_rhb = _fetch_pitching_season_raw(
-        season - 1,
-        pitching_stats,
-        use_cache,
-        kind="pitching_vs_rhb",
-        month=_SPLIT_MONTH_VS_RIGHT,
-        split_type="vs_rhb",
-    )
+    # NOTE: keep the split-profile plumbing intact so a future supported source
+    # can populate these fields. For now we intentionally skip the unsupported
+    # FanGraphs `month=13/14` requests and let the engine fall back to overall
+    # pitcher rates when no split is present.
+    # current_vs_lhb = _fetch_pitching_season_raw(..., month=_SPLIT_MONTH_VS_LEFT, ...)
+    # prior_vs_lhb = _fetch_pitching_season_raw(..., month=_SPLIT_MONTH_VS_LEFT, ...)
+    # current_vs_rhb = _fetch_pitching_season_raw(..., month=_SPLIT_MONTH_VS_RIGHT, ...)
+    # prior_vs_rhb = _fetch_pitching_season_raw(..., month=_SPLIT_MONTH_VS_RIGHT, ...)
+    current_vs_lhb: dict[str, dict] = {}
+    prior_vs_lhb: dict[str, dict] = {}
+    current_vs_rhb: dict[str, dict] = {}
+    prior_vs_rhb: dict[str, dict] = {}
     players: dict[str, dict] = {}
     threshold = _pitching_threshold_for_season(season)
 
