@@ -16,8 +16,14 @@ The odds ratio removes it.
 
 ### Step 1 — Pick the right league average
 
-Rates differ meaningfully by handedness matchup. We maintain four separate baselines
-(2025 approximations):
+Rates differ meaningfully by handedness matchup. We use four separate baselines, one per
+batter-hand × pitcher-hand combination. These are loaded at runtime: `build_game_context()`
+fetches matchup rates from pybaseball batting split leaderboards (vs-LHP / vs-RHP), computes
+weighted averages across all qualifying players, and writes the result into `LEAGUE_AVERAGES`.
+If the live fetch fails, the engine falls back to a cached `computed_league_averages-{season}.json`,
+then to hardcoded 2025 constants in `mlb/config.py`.
+
+Representative 2025 values (actual runtime values may differ slightly):
 
 | Matchup | K% | BB% | HR% | OUT% |
 |---|---|---|---|---|

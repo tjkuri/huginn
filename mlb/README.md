@@ -117,12 +117,17 @@ After N simulations (default 10,000):
 
 | Source | Used for |
 |--------|----------|
-| `pybaseball` | Season batting/pitching stats with L/R handedness splits |
+| `pybaseball` | Season batting/pitching stats (overall and L/R handedness splits) |
 | `MLB-StatsAPI` | Today's schedule, confirmed lineups, roster |
-| `mlb/data/park_factors.py` | Hardcoded 2025 park factors (refresh annually) |
-| League averages in `mlb/config.py` | Fallback for unknown players; calibration baseline |
+| `MLB People API` | Player handedness enrichment (FanGraphs `Bat` column is batting runs, not L/R/S) |
+| FanGraphs legacy API | Direct HTML split fetches for vs-LHP / vs-RHP / vs-LHB / vs-RHB rates |
+| Baseball Savant | Handedness-split park factors fetched at runtime and cached |
+| `mlb/data/park_factors.py` | Hardcoded 2025 fallback park factors when Savant data is unavailable |
+| `mlb/config.py` `LEAGUE_AVERAGES` | Last-resort fallback only; overwritten at runtime by fetched matchup rates |
 
-**Fallback chain:** current-year stats → prior-year stats (early season) → league average. The data quality panel reports how many players are on each tier.
+**League average fallback chain:** fetched from pybaseball splits → `computed_league_averages-{season}.json` cache → hardcoded constants in `config.py` with a warning.
+
+**Player fallback chain:** current-year stats (≥50 PA / 20 IP) → prior-year stats (≥10 PA / 5 IP) → league average. The data quality panel reports how many players are on each tier.
 
 ### Key Design Decisions
 
@@ -132,6 +137,7 @@ After N simulations (default 10,000):
 - **No GIDP in v1.** Ground-ball double plays not modeled; runners hold on generic outs (except sac fly).
 - **Sac fly approximation.** Runner on 3rd scores 50% of the time on a generic out with fewer than 2 outs.
 - **Per-PA handedness splits.** Batters facing the starter use vs-LHP or vs-RHP rates; batters facing the bullpen use overall rates. Pitchers always use their vs-LHB or vs-RHB split based on the batter's effective side.
+- **Runtime league averages.** `build_game_context()` calls `ensure_runtime_league_averages()` once before simulation, which fetches matchup-specific rates (LHB vs RHP, etc.) from pybaseball split data and mutates the global `LEAGUE_AVERAGES` mapping in place. Falls back to cached file → hardcoded constants if the fetch fails.
 
 ## Simulation Heuristics
 
@@ -202,5 +208,5 @@ mlb/
     format_output.py     Rich terminal formatter (box score, player tables, data notes)
     test_smoke.py        Synthetic end-to-end smoke test (no network required)
     diagnose_calibration.py  League-average neutral game calibration check
-tests/mlb/               pytest suite (185+ tests)
+tests/mlb/               pytest suite (204 tests)
 ```
