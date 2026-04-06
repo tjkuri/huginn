@@ -22,20 +22,32 @@ Huginn currently has two engines:
 - **[NBA](nba/)** — prediction backtest and parameter optimizer. Reads cached predictions from [Yggdrasil](../yggdrasil) and measures how well the model beat the closing line over time.
 - **[MLB](mlb/)** — Monte Carlo game simulation engine. Fetches live rosters, stats, and lineups, simulates thousands of games via the odds-ratio method, and produces betting-line projections and player prop estimates.
 
-## Setup
+## Getting Started
+
+**Requirements:** Python 3.11+. The NBA engine reads from [`../yggdrasil/cache/`](../yggdrasil) — clone that repo as a sibling if you need NBA backtest data.
 
 ```bash
+# 1. Clone and enter the repo
+git clone <repo-url>
+cd huginn
+
+# 2. Create and activate a virtual environment
 python3 -m venv venv
-source venv/bin/activate
+source venv/bin/activate          # Windows: venv\Scripts\activate
+
+# 3. Install all dependencies
 pip install -r requirements.txt
 
-# MLB data dependencies
-pip install pybaseball MLB-StatsAPI
+# 4. Verify everything works
+python -m pytest tests/ -v        # all tests
+python -m mlb.scripts.test_smoke  # MLB end-to-end smoke test (no network needed)
 ```
 
-## Quick Start
+## Usage
 
 ```bash
+source venv/bin/activate
+
 # NBA backtest
 python nba/scripts/run_backtest.py
 python nba/scripts/run_backtest.py --days 7 --team Lakers
