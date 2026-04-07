@@ -591,7 +591,7 @@ class TestBuildGameContext:
         assert context.away_lineup.batting_order[-1].name == "Away Batter 9"
         assert getattr(context.away_lineup.batting_order[-1], "data_source") == "league_avg"
         assert sum(context.away_lineup.batting_order[-1].rates.values()) == pytest.approx(1.0)
-        assert any("Missing batting data for Away Batter 9" in record.message for record in caplog.records)
+        assert any("Away Batter 9" in record.message and "league average" in record.message for record in caplog.records)
         assert context.away_lineup.bullpen[0].name == "Away Team Bullpen"
 
     def test_roster_fallback_tags_lineup_and_starter_sources(self, monkeypatch):
@@ -642,38 +642,69 @@ class TestBuildGameContext:
 
 class TestNormalizeName:
     def test_strips_accents(self):
-        from mlb.data.stats import _normalize_name
-        assert _normalize_name("Agustín Ramírez") == _normalize_name("Agustin Ramirez")
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("Agustín Ramírez") == "agustin ramirez"
 
     def test_strips_accents_various(self):
-        from mlb.data.stats import _normalize_name
-        assert _normalize_name("José Caballero") == "jose caballero"
-        assert _normalize_name("Néstor Cortés") == "nestor cortes"
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("José Caballero") == "jose caballero"
+        assert normalize_name("Néstor Cortés") == "nestor cortes"
+
+    def test_strips_accents_angel(self):
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("Ángel Zerpa") == "angel zerpa"
 
     def test_strips_periods_from_initials(self):
-        from mlb.data.stats import _normalize_name
-        assert _normalize_name("J.C. Escarra") == _normalize_name("JC Escarra")
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("J.C. Escarra") == "jc escarra"
 
     def test_strips_trailing_jr_suffix(self):
-        from mlb.data.stats import _normalize_name
-        assert _normalize_name("Ronald Acuna Jr.") == _normalize_name("Ronald Acuna")
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("Ronald Acuña Jr.") == "ronald acuna"
+
+    def test_strips_trailing_jr_suffix_no_period(self):
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("Ronald Acuna Jr") == "ronald acuna"
 
     def test_strips_trailing_sr_suffix(self):
-        from mlb.data.stats import _normalize_name
-        assert _normalize_name("Ken Griffey Sr") == _normalize_name("Ken Griffey")
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("Ken Griffey Sr") == "ken griffey"
+
+    def test_strips_trailing_ii_suffix(self):
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("C.J. Abrams II") == "cj abrams"
 
     def test_strips_trailing_iii_suffix(self):
-        from mlb.data.stats import _normalize_name
-        assert _normalize_name("Cal Ripken III") == _normalize_name("Cal Ripken")
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("Cal Ripken III") == "cal ripken"
+
+    def test_strips_trailing_iv_suffix(self):
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("Player Name IV") == "player name"
+
+    def test_iv_not_stripped_from_middle_of_name(self):
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("Ivan Rodriguez") == "ivan rodriguez"
 
     def test_lowercases_and_collapses_whitespace(self):
-        from mlb.data.stats import _normalize_name
-        assert _normalize_name("  Aaron  Judge  ") == "aaron judge"
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("  Aaron  Judge  ") == "aaron judge"
 
-    def test_builder_normalize_name_matches_stats(self):
+    def test_multi_word_last_name(self):
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("José De La Cruz") == "jose de la cruz"
+
+    def test_empty_string(self):
+        from mlb.utils.normalize import normalize_name
+        assert normalize_name("") == ""
+
+    def test_canonical_matches_stats_and_builder(self):
+        from mlb.utils.normalize import normalize_name
         from mlb.data.stats import _normalize_name as stats_norm
         from mlb.data.builder import _normalize_name as builder_norm
-        assert stats_norm("Agustín Ramírez") == builder_norm("agustin ramirez")
+        names = ["Agustín Ramírez", "Ronald Acuña Jr.", "J.C. Escarra", "Ángel Zerpa"]
+        for name in names:
+            assert normalize_name(name) == stats_norm(name) == builder_norm(name)
 
 
 class TestLeagueAverageFallbacks:

@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import logging
-import re
-import unicodedata
 from datetime import date
 from typing import Any
 
@@ -14,18 +12,6 @@ logger = logging.getLogger(__name__)
 
 def _today_str() -> str:
     return date.today().isoformat()
-
-
-_NAME_SUFFIX_RE = re.compile(r'\s+(jr|sr|ii|iii|iv)$')
-
-
-def _normalize_name(name: str) -> str:
-    nfkd = unicodedata.normalize('NFD', str(name))
-    stripped = ''.join(c for c in nfkd if not unicodedata.category(c).startswith('M'))
-    stripped = stripped.replace('.', '')
-    stripped = ' '.join(stripped.strip().lower().split())
-    stripped = _NAME_SUFFIX_RE.sub('', stripped)
-    return stripped
 
 
 def _import_statsapi():

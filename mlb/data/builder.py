@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import logging
-import re
-import unicodedata
 
 from mlb.config import Hand, LEAGUE_AVERAGES, SEASON
 from mlb.data.lineups import build_default_lineup_from_roster, fetch_game_lineup, fetch_team_roster
@@ -17,20 +15,9 @@ from mlb.data.stats import (
     fetch_team_bullpen_stats,
 )
 from mlb.data.weather import get_game_weather
+from mlb.utils.normalize import normalize_name as _normalize_name
 
 logger = logging.getLogger(__name__)
-
-
-_NAME_SUFFIX_RE = re.compile(r'\s+(jr|sr|ii|iii|iv)$')
-
-
-def _normalize_name(name: str) -> str:
-    nfkd = unicodedata.normalize('NFD', str(name))
-    stripped = ''.join(c for c in nfkd if not unicodedata.category(c).startswith('M'))
-    stripped = stripped.replace('.', '')
-    stripped = ' '.join(stripped.strip().lower().split())
-    stripped = _NAME_SUFFIX_RE.sub('', stripped)
-    return stripped
 
 
 def _league_average_batter(name: str, bats: str, pitcher_throws: str | None = None) -> dict:
@@ -91,9 +78,12 @@ def _build_batting_order(
     opposing_throws = (opposing_pitcher or {}).get("throws")
     for player in players[:9]:
         name = player.get("name", "")
-        stats = batting_data.get(_normalize_name(name))
+        normalized = _normalize_name(name)
+        stats = batting_data.get(normalized)
         if stats is None:
-            logger.warning("Missing batting data for %s; using league-average fallback", name)
+            logger.warning(
+                'No stats found for "%s" (normalized: "%s") — using league average', name, normalized
+            )
             stats = _league_average_batter(name, player.get("bats", "R"), opposing_throws)
         elif stats.get("source") == str(SEASON - 1):
             logger.info("Using %s batting stats for %s", SEASON - 1, name)
@@ -119,9 +109,12 @@ def _build_pitcher(player: dict | None, pitching_data: dict[str, dict]):
         return pitcher
 
     name = player.get("name", "")
-    stats = pitching_data.get(_normalize_name(name))
+    normalized = _normalize_name(name)
+    stats = pitching_data.get(normalized)
     if stats is None:
-        logger.warning("Missing pitching data for %s; using league-average fallback", name)
+        logger.warning(
+            'No stats found for "%s" (normalized: "%s") — using league average', name, normalized
+        )
         stats = _league_average_pitcher(name, player.get("throws", "R"))
     elif stats.get("source") == str(SEASON - 1):
         logger.info("Using %s pitching stats for %s", SEASON - 1, name)

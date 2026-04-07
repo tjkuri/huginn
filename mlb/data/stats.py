@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import time
-import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -21,6 +20,7 @@ from mlb.config import (
     STATS_CACHE_MAX_AGE_HOURS,
 )
 from mlb.data.models import BatterStats, PitcherStats
+from mlb.utils.normalize import normalize_name as _normalize_name
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,6 @@ _FANGRAPHS_HEADERS = {
     "Referer": "https://www.fangraphs.com/",
 }
 
-_NAME_SUFFIX_RE = re.compile(r'\s+(jr|sr|ii|iii|iv)$')
 _TEAM_BULLPEN_CACHE: dict[tuple[int, bool], dict[str, dict[str, Any]]] = {}
 _COMPUTED_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[str, float]] = {}
 _MATCHUP_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[tuple[Hand, Hand], dict[str, float]]] = {}
@@ -83,19 +82,6 @@ _TEAM_TO_FG_CODE = {
     "Toronto Blue Jays": "TOR",
     "Washington Nationals": "WSN",
 }
-
-
-def _normalize_name(name: str) -> str:
-    # Strip diacritical marks via NFD decomposition
-    nfkd = unicodedata.normalize('NFD', str(name))
-    stripped = ''.join(c for c in nfkd if not unicodedata.category(c).startswith('M'))
-    # Remove periods (turns "J.C." into "JC")
-    stripped = stripped.replace('.', '')
-    # Lowercase and collapse whitespace
-    stripped = ' '.join(stripped.strip().lower().split())
-    # Strip trailing name suffixes
-    stripped = _NAME_SUFFIX_RE.sub('', stripped)
-    return stripped
 
 
 # ── Raw season stat cache (flat files, no subdirectories) ────────────────────
