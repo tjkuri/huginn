@@ -175,8 +175,6 @@ def marcel_blend(
     return total_num / total_den
 
 
-# Stubs — to be implemented in later tasks
-
 
 def _overall_league_avg_rates() -> dict[str, float]:
     """Simple average of all four matchup league averages (Marcel regression target for overall rates)."""
