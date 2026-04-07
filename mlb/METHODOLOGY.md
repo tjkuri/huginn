@@ -86,9 +86,64 @@ A hitter with 400 PA in 2025 at HR%=0.040 and 60 PA in 2026 at HR%=0.020, league
 
 The 2025 season dominates because it has 6.7× more weight than the thin 2026 sample.
 
-Overall projections use overall season rows. Handedness split projections use the matching
-split rows (`vs LHP`, `vs RHP`, `vs LHB`, `vs RHB`) when available, with split PA as the
-sample size. If split rows are missing, the matchup selection path falls back to the
+Overall projections use overall season rows and regress toward the league-average rates described
+in Step 1 below.
+
+#### Split projections — two-step overall-baseline approach
+
+Handedness split projections (vs-LHP / vs-RHP for batters; vs-LHB / vs-RHB for pitchers)
+are **anchored to the overall Marcel** rather than computed fully independently. The problem
+with fully independent split Marcel is that players with thin split history (e.g. 30 total PA
+vs LHP across three seasons) drift toward the matchup league average rather than their
+known overall talent, producing unreliable platoon projections.
+
+The two-step approach:
+
+**Step 1 — Compute the overall Marcel baseline** (unchanged formula above). This is the
+player's true talent estimate.
+
+**Step 2 — Marcel-blend the platoon ratio.** For each split bucket and each rate stat,
+compute the per-season ratio:
+
+```
+ratio[stat] = split_rate[stat] / overall_rate[stat]   (1.0 when overall_rate is zero)
+```
+
+Marcel-blend those per-season ratios toward **1.0** (the neutral, no-platoon-effect target)
+using halved regression constants:
+
+| Stat | Ratio constant (PA equiv.) |
+|------|-----------------------------|
+| K%   | 75  |
+| BB%  | 100 |
+| HR%  | 160 |
+| 1B%  | 100 |
+| 2B%  | 200 |
+| 3B%  | 400 |
+| HBP% | 200 |
+
+Pitchers use a single ratio constant of **75 BF** for all rate stats.
+
+The ratio regression target is 1.0 rather than a matchup league-average rate because we
+are regressing a *multiplier* not an absolute rate. Thin samples pull the ratio toward
+1.0 (no platoon effect), not toward the league average platoon split.
+
+**Step 3 — Apply ratio to overall baseline:**
+
+```
+projected_split_rate[stat] = overall_marcel_rate[stat] × blended_ratio[stat]
+```
+
+The resulting split rates are re-normalized to sum to 1.0.
+
+**Effect on sample size extremes:**
+- Rich split history (300+ PA per bucket) → ratio reflects actual observed platoon split;
+  projected split stays close to what an independent Marcel would produce.
+- Thin split history (30 PA vs LHP) → ratio regresses heavily toward 1.0; projected
+  split stays close to overall talent rather than a noisy matchup average.
+- No split data at all → split key is omitted; engine falls back to overall rates.
+
+If split rows are missing entirely, the matchup selection path falls back to the
 player's overall projected profile.
 
 ### Step 1 — Pick the right league average

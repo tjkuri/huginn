@@ -35,7 +35,18 @@ _BATTER_REGRESSION_CONSTANTS: dict[str, float] = {
     "3B": 800.0,
     "HBP": 400.0,
 }
+# Halved constants for the split-ratio Marcel (regresses ratio toward 1.0, not an absolute rate)
+_BATTER_RATIO_REGRESSION_CONSTANTS: dict[str, float] = {
+    "BB": 100.0,
+    "K": 75.0,
+    "HR": 160.0,
+    "1B": 100.0,
+    "2B": 200.0,
+    "3B": 400.0,
+    "HBP": 200.0,
+}
 _PITCHER_REGRESSION_CONSTANT = 150.0
+_PITCHER_RATIO_REGRESSION_CONSTANT = 75.0
 _BATTER_NORMALIZER = 200.0
 _PITCHER_NORMALIZER = 150.0
 _FANGRAPHS_LEGACY_URL = "https://www.fangraphs.com/leaders-legacy.aspx"
@@ -231,6 +242,39 @@ def _apply_marcel(
     return _normalize_rates(blended), n
 
 
+def _apply_marcel_ratios(
+    ratio_seasons: list[tuple[int, dict[str, float], float]],
+    regression_constants: dict[str, float],
+    normalizer: float,
+) -> tuple[dict[str, float], int]:
+    """Marcel-blend per-season split/overall ratios toward 1.0 (no platoon effect).
+
+    Args:
+        ratio_seasons: List of (year_coefficient, ratio_rates_dict, sample_size) where
+                       each ratio is split_rate[stat] / overall_rate[stat] for that season.
+        regression_constants: Halved per-stat regression constants (ratio regression).
+        normalizer: 200 for batters (PA), 150 for pitchers (BF).
+
+    Returns:
+        (blended_ratios, n_seasons_with_data). Ratios are multipliers, NOT normalized.
+    """
+    seasons_with_data = [(yc, rates, pa) for yc, rates, pa in ratio_seasons if pa > 0]
+    n = len(seasons_with_data)
+    if n == 0:
+        return {stat: 1.0 for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")}, 0
+
+    blended: dict[str, float] = {}
+    for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR"):
+        season_data = [(yc, rates.get(stat, 1.0), pa) for yc, rates, pa in seasons_with_data]
+        blended[stat] = marcel_blend(
+            season_data,
+            regression_constants[stat],
+            1.0,  # regression target: no platoon effect
+            normalizer,
+        )
+    return blended, n
+
+
 def _marcel_batter_player(
     s1_overall: dict[str, Any] | None,
     s2_overall: dict[str, Any] | None,
@@ -242,6 +286,7 @@ def _marcel_batter_player(
     s2_vs_rhp: dict[str, Any] | None,
     s3_vs_rhp: dict[str, Any] | None,
     bats: Hand,
+    overall_league_avg: dict[str, float] | None = None,
 ) -> dict[str, Any] | None:
     """Apply Marcel projection to one batter across up to three seasons.
 
@@ -256,7 +301,7 @@ def _marcel_batter_player(
     if not overall_seasons:
         return None
 
-    league_avg = _overall_league_avg_rates()
+    league_avg = overall_league_avg if overall_league_avg is not None else _overall_league_avg_rates()
     blended_rates, n_seasons = _apply_marcel(overall_seasons, _BATTER_REGRESSION_CONSTANTS, league_avg, _BATTER_NORMALIZER)
     source_tag = _marcel_source_tag(n_seasons)
 
@@ -278,21 +323,45 @@ def _marcel_batter_player(
         "split_type": "overall",
     }
 
+    # Two-step split projection: anchor to overall Marcel, apply ratio adjustment.
+    # Step 1 (overall Marcel) is already done above.
+    # Step 2: for each split, Marcel-blend per-season ratios (split/overall) toward 1.0,
+    # then multiply overall rates by those ratios. Thin split history regresses ratio
+    # toward 1.0 so the projection stays close to overall talent.
     splits: dict[str, dict[str, Any]] = {}
     for split_key, pitcher_hand, sp1, sp2, sp3 in (
         ("vs_lhp", Hand.LEFT, s1_vs_lhp, s2_vs_lhp, s3_vs_lhp),
         ("vs_rhp", Hand.RIGHT, s1_vs_rhp, s2_vs_rhp, s3_vs_rhp),
     ):
-        split_seasons = [
-            (yc, dict(pl.get("rates") or {}), _safe_int(pl.get("pa")))
-            for yc, pl in ((5, sp1), (4, sp2), (3, sp3))
-            if pl and _safe_int(pl.get("pa")) > 0
-        ]
-        if not split_seasons:
+        ratio_seasons = []
+        for yc, sp, ov in (
+            (5, sp1, s1_overall),
+            (4, sp2, s2_overall),
+            (3, sp3, s3_overall),
+        ):
+            if not sp or _safe_int(sp.get("pa")) <= 0:
+                continue
+            sp_rates = dict(sp.get("rates") or {})
+            ov_rates = dict((ov or {}).get("rates") or {})
+            ratio_rates = {
+                stat: (sp_rates.get(stat, 0.0) / ov_rates[stat] if ov_rates.get(stat, 0.0) > 0 else 1.0)
+                for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+            }
+            ratio_seasons.append((yc, ratio_rates, _safe_int(sp.get("pa"))))
+
+        if not ratio_seasons:
             continue
-        effective_hand = _effective_batter_hand_for_pitcher(bats, pitcher_hand)
-        matchup_avg = dict(LEAGUE_AVERAGES[(effective_hand, pitcher_hand)])
-        split_rates, split_n = _apply_marcel(split_seasons, _BATTER_REGRESSION_CONSTANTS, matchup_avg, _BATTER_NORMALIZER)
+
+        blended_ratios, split_n = _apply_marcel_ratios(
+            ratio_seasons, _BATTER_RATIO_REGRESSION_CONSTANTS, _BATTER_NORMALIZER
+        )
+        split_rates = {
+            stat: blended_rates[stat] * blended_ratios.get(stat, 1.0)
+            for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+        }
+        split_rates["OUT"] = 0.0
+        split_rates = _normalize_rates(split_rates)
+
         split_pa = (
             _safe_int((sp1 or {}).get("pa"))
             or _safe_int((sp2 or {}).get("pa"))
@@ -319,6 +388,7 @@ def _marcel_pitcher_player(
     s1_vs_rhb: dict[str, Any] | None,
     s2_vs_rhb: dict[str, Any] | None,
     s3_vs_rhb: dict[str, Any] | None,
+    overall_league_avg: dict[str, float] | None = None,
 ) -> dict[str, Any] | None:
     """Apply Marcel projection to one pitcher across up to three seasons.
 
@@ -334,7 +404,7 @@ def _marcel_pitcher_player(
         return None
 
     regression_constants = {stat: _PITCHER_REGRESSION_CONSTANT for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")}
-    league_avg = _overall_league_avg_rates()
+    league_avg = overall_league_avg if overall_league_avg is not None else _overall_league_avg_rates()
     blended_rates, n_seasons = _apply_marcel(overall_seasons, regression_constants, league_avg, _PITCHER_NORMALIZER)
     source_tag = _marcel_source_tag(n_seasons)
 
@@ -363,20 +433,42 @@ def _marcel_pitcher_player(
         "split_type": "overall",
     }
 
+    # Two-step split projection: anchor to overall Marcel, apply ratio adjustment.
+    ratio_regression_constants = {stat: _PITCHER_RATIO_REGRESSION_CONSTANT for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")}
     splits: dict[str, dict[str, Any]] = {}
     for split_key, batter_hand, sp1, sp2, sp3 in (
         ("vs_lhb", Hand.LEFT, s1_vs_lhb, s2_vs_lhb, s3_vs_lhb),
         ("vs_rhb", Hand.RIGHT, s1_vs_rhb, s2_vs_rhb, s3_vs_rhb),
     ):
-        split_seasons = [
-            (yc, dict(pl.get("rates") or {}), _safe_int(pl.get("pa_against")))
-            for yc, pl in ((5, sp1), (4, sp2), (3, sp3))
-            if pl and _safe_int(pl.get("pa_against")) > 0
-        ]
-        if not split_seasons:
+        ratio_seasons = []
+        for yc, sp, ov in (
+            (5, sp1, s1_overall),
+            (4, sp2, s2_overall),
+            (3, sp3, s3_overall),
+        ):
+            if not sp or _safe_int(sp.get("pa_against")) <= 0:
+                continue
+            sp_rates = dict(sp.get("rates") or {})
+            ov_rates = dict((ov or {}).get("rates") or {})
+            ratio_rates = {
+                stat: (sp_rates.get(stat, 0.0) / ov_rates[stat] if ov_rates.get(stat, 0.0) > 0 else 1.0)
+                for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+            }
+            ratio_seasons.append((yc, ratio_rates, _safe_int(sp.get("pa_against"))))
+
+        if not ratio_seasons:
             continue
-        matchup_avg = dict(LEAGUE_AVERAGES[(batter_hand, throws_hand)])
-        split_rates, split_n = _apply_marcel(split_seasons, regression_constants, matchup_avg, _PITCHER_NORMALIZER)
+
+        blended_ratios, split_n = _apply_marcel_ratios(
+            ratio_seasons, ratio_regression_constants, _PITCHER_NORMALIZER
+        )
+        split_rates = {
+            stat: blended_rates[stat] * blended_ratios.get(stat, 1.0)
+            for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+        }
+        split_rates["OUT"] = 0.0
+        split_rates = _normalize_rates(split_rates)
+
         split_pa = (
             _safe_int((sp1 or {}).get("pa_against"))
             or _safe_int((sp2 or {}).get("pa_against"))
@@ -1098,17 +1190,36 @@ def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[s
     s1_players = _fetch_batting_season_raw(season, batting_stats, use_cache)
     s2_players = _fetch_batting_season_raw(season - 1, batting_stats, use_cache)
     s3_players = _fetch_batting_season_raw(season - 2, batting_stats, use_cache)
+
+    # Fetch the true PA-weighted overall league average for Marcel regression target.
+    # Fall back to the equal-weight proxy if unavailable (e.g., during tests).
     try:
-        s1_vs_lhp = _fetch_batting_split_raw(season, _SPLIT_MONTH_VS_LEFT, use_cache, kind="batting_vs_lhp", split_type="vs_lhp")
-        s2_vs_lhp = _fetch_batting_split_raw(season - 1, _SPLIT_MONTH_VS_LEFT, use_cache, kind="batting_vs_lhp", split_type="vs_lhp")
-        s3_vs_lhp = _fetch_batting_split_raw(season - 2, _SPLIT_MONTH_VS_LEFT, use_cache, kind="batting_vs_lhp", split_type="vs_lhp")
-        s1_vs_rhp = _fetch_batting_split_raw(season, _SPLIT_MONTH_VS_RIGHT, use_cache, kind="batting_vs_rhp", split_type="vs_rhp")
-        s2_vs_rhp = _fetch_batting_split_raw(season - 1, _SPLIT_MONTH_VS_RIGHT, use_cache, kind="batting_vs_rhp", split_type="vs_rhp")
-        s3_vs_rhp = _fetch_batting_split_raw(season - 2, _SPLIT_MONTH_VS_RIGHT, use_cache, kind="batting_vs_rhp", split_type="vs_rhp")
-    except Exception as exc:
-        logger.warning("Batting split fetch failed for %d (%s); using overall-only batting profiles", season, exc)
-        s1_vs_lhp = s2_vs_lhp = s3_vs_lhp = {}
-        s1_vs_rhp = s2_vs_rhp = s3_vs_rhp = {}
+        overall_lg: dict[str, float] | None = fetch_computed_league_averages(season=season, use_cache=use_cache)
+    except Exception:
+        overall_lg = None
+
+    # Each season/split combination fails independently so one 403 doesn't discard all splits.
+    split_results: dict[tuple[int, str], dict[str, dict]] = {}
+    for _s, _month, _kind, _split_type in [
+        (season, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
+        (season - 1, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
+        (season - 2, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
+        (season, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
+        (season - 1, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
+        (season - 2, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
+    ]:
+        try:
+            split_results[(_s, _split_type)] = _fetch_batting_split_raw(_s, _month, use_cache, kind=_kind, split_type=_split_type)
+        except Exception as exc:
+            logger.warning("Batting split fetch failed for %d %s (%s); split excluded from Marcel", _s, _split_type, exc)
+            split_results[(_s, _split_type)] = {}
+
+    s1_vs_lhp = split_results[(season, "vs_lhp")]
+    s2_vs_lhp = split_results[(season - 1, "vs_lhp")]
+    s3_vs_lhp = split_results[(season - 2, "vs_lhp")]
+    s1_vs_rhp = split_results[(season, "vs_rhp")]
+    s2_vs_rhp = split_results[(season - 1, "vs_rhp")]
+    s3_vs_rhp = split_results[(season - 2, "vs_rhp")]
 
     all_names = (
         set(s1_players) | set(s2_players) | set(s3_players)
@@ -1126,6 +1237,7 @@ def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[s
             s1_vs_lhp.get(name), s2_vs_lhp.get(name), s3_vs_lhp.get(name),
             s1_vs_rhp.get(name), s2_vs_rhp.get(name), s3_vs_rhp.get(name),
             bats_hand,
+            overall_lg,
         )
         if player is not None:
             players[name] = player
@@ -1138,17 +1250,36 @@ def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[
     s1_players = _fetch_pitching_season_raw(season, pitching_stats, use_cache)
     s2_players = _fetch_pitching_season_raw(season - 1, pitching_stats, use_cache)
     s3_players = _fetch_pitching_season_raw(season - 2, pitching_stats, use_cache)
+
+    # Fetch the true PA-weighted overall league average for Marcel regression target.
+    # Fall back to the equal-weight proxy if unavailable (e.g., during tests).
     try:
-        s1_vs_lhb = _fetch_pitching_split_raw(season, _SPLIT_MONTH_VS_LEFT, use_cache, kind="pitching_vs_lhb", split_type="vs_lhb")
-        s2_vs_lhb = _fetch_pitching_split_raw(season - 1, _SPLIT_MONTH_VS_LEFT, use_cache, kind="pitching_vs_lhb", split_type="vs_lhb")
-        s3_vs_lhb = _fetch_pitching_split_raw(season - 2, _SPLIT_MONTH_VS_LEFT, use_cache, kind="pitching_vs_lhb", split_type="vs_lhb")
-        s1_vs_rhb = _fetch_pitching_split_raw(season, _SPLIT_MONTH_VS_RIGHT, use_cache, kind="pitching_vs_rhb", split_type="vs_rhb")
-        s2_vs_rhb = _fetch_pitching_split_raw(season - 1, _SPLIT_MONTH_VS_RIGHT, use_cache, kind="pitching_vs_rhb", split_type="vs_rhb")
-        s3_vs_rhb = _fetch_pitching_split_raw(season - 2, _SPLIT_MONTH_VS_RIGHT, use_cache, kind="pitching_vs_rhb", split_type="vs_rhb")
-    except Exception as exc:
-        logger.warning("Pitching split fetch failed for %d (%s); using overall-only pitching profiles", season, exc)
-        s1_vs_lhb = s2_vs_lhb = s3_vs_lhb = {}
-        s1_vs_rhb = s2_vs_rhb = s3_vs_rhb = {}
+        overall_lg: dict[str, float] | None = fetch_computed_league_averages(season=season, use_cache=use_cache)
+    except Exception:
+        overall_lg = None
+
+    # Each season/split combination fails independently so one 403 doesn't discard all splits.
+    split_results: dict[tuple[int, str], dict[str, dict]] = {}
+    for _s, _month, _kind, _split_type in [
+        (season, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
+        (season - 1, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
+        (season - 2, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
+        (season, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
+        (season - 1, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
+        (season - 2, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
+    ]:
+        try:
+            split_results[(_s, _split_type)] = _fetch_pitching_split_raw(_s, _month, use_cache, kind=_kind, split_type=_split_type)
+        except Exception as exc:
+            logger.warning("Pitching split fetch failed for %d %s (%s); split excluded from Marcel", _s, _split_type, exc)
+            split_results[(_s, _split_type)] = {}
+
+    s1_vs_lhb = split_results[(season, "vs_lhb")]
+    s2_vs_lhb = split_results[(season - 1, "vs_lhb")]
+    s3_vs_lhb = split_results[(season - 2, "vs_lhb")]
+    s1_vs_rhb = split_results[(season, "vs_rhb")]
+    s2_vs_rhb = split_results[(season - 1, "vs_rhb")]
+    s3_vs_rhb = split_results[(season - 2, "vs_rhb")]
 
     all_names = (
         set(s1_players) | set(s2_players) | set(s3_players)
@@ -1161,6 +1292,7 @@ def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[
             s1_players.get(name), s2_players.get(name), s3_players.get(name),
             s1_vs_lhb.get(name), s2_vs_lhb.get(name), s3_vs_lhb.get(name),
             s1_vs_rhb.get(name), s2_vs_rhb.get(name), s3_vs_rhb.get(name),
+            overall_lg,
         )
         if player is not None:
             players[name] = player
