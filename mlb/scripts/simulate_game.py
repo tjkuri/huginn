@@ -16,7 +16,7 @@ from mlb.config import LEAGUE_AVERAGES, NUM_SIMULATIONS, SEASON
 from mlb.data.builder import build_game_context
 from mlb.data.lineups import fetch_todays_games
 from mlb.data.models import GameContext, SimulatedGame, SimulationResult
-from mlb.data.stats import fetch_batting_splits, fetch_computed_league_averages, fetch_pitching_splits
+from mlb.data.stats import fetch_batting_splits, fetch_pitching_splits
 from mlb.engine.aggregate import (
     compute_betting_lines,
     compute_player_stats,
@@ -28,7 +28,6 @@ from mlb.scripts.format_output import build_terminal_output
 
 try:
     from rich.console import Console
-
     HAS_RICH = True
 except ImportError:  # pragma: no cover
     Console = None
@@ -179,18 +178,20 @@ def simulate_game_context(
     progress_label: str | None = None,
 ) -> tuple[SimulationResult, list[SimulatedGame]]:
     """Run simulations for one game, optionally in chunks for progress reporting."""
+    effective_seed = base_seed if base_seed is not None else random.randint(0, 2**31 - 1)
+
     if not verbose or n_simulations <= _PROGRESS_CHUNK_SIZE:
-        all_games = run_simulations(game_context, LEAGUE_AVERAGES, n_simulations, base_seed)
+        all_games = run_simulations(game_context, LEAGUE_AVERAGES, n_simulations, effective_seed)
     else:
         remaining = n_simulations
         completed = 0
         all_games = []
         label = progress_label or game_context.game_id
-        start_seed = base_seed
+        start_seed = effective_seed
 
         while remaining > 0:
             chunk_size = min(_PROGRESS_CHUNK_SIZE, remaining)
-            chunk_seed = None if start_seed is None else start_seed + completed
+            chunk_seed = start_seed + completed
             chunk_games = run_simulations(game_context, LEAGUE_AVERAGES, chunk_size, chunk_seed)
             all_games.extend(chunk_games)
             completed += chunk_size
@@ -250,15 +251,6 @@ def load_schedule_and_stats(target_date: str, verbose: bool = False) -> tuple[li
             src = player.get("source", "other")
             counts[src] = counts.get(src, 0) + 1
         logger.info("Pitching stats loaded: %s", counts)
-        league_rates = fetch_computed_league_averages(season=SEASON)
-        logger.info(
-            "League averages (%s): K=%.1f%%, BB=%.1f%%, HR=%.1f%%, AVG=%.3f",
-            SEASON,
-            league_rates["K"] * 100,
-            league_rates["BB"] * 100,
-            league_rates["HR"] * 100,
-            league_rates["AVG"],
-        )
     return games, batting_data, pitching_data
 
 
@@ -299,7 +291,8 @@ def run_cli(args: argparse.Namespace) -> int:
     for index, game in enumerate(games, start=1):
         label = f"{game.get('away_team', 'Away')} @ {game.get('home_team', 'Home')}"
         start_time = time.time()
-        game_seed = None if args.seed is None else args.seed + index - 1
+        requested_game_seed = None if args.seed is None else args.seed + index - 1
+        effective_game_seed = requested_game_seed if requested_game_seed is not None else random.randint(0, 2**31 - 1)
         if args.verbose:
             logger.info("Simulating Game %s/%s: %s...", index, len(games), label)
 
@@ -310,7 +303,7 @@ def run_cli(args: argparse.Namespace) -> int:
                 result, simulated_games = simulate_game_context(
                     context,
                     n_simulations=args.sims,
-                    base_seed=game_seed,
+                    base_seed=effective_game_seed,
                     verbose=args.verbose and not args.json,
                     progress_label=label,
                 )
@@ -321,7 +314,7 @@ def run_cli(args: argparse.Namespace) -> int:
             continue
 
         had_success = True
-        outputs.append(serialize_simulation_result(result, context, game_seed, data_warnings))
+        outputs.append(serialize_simulation_result(result, context, requested_game_seed, data_warnings))
         if args.verbose:
             logger.info("done (%.1fs)", time.time() - start_time)
         if not args.json:
@@ -330,7 +323,7 @@ def run_cli(args: argparse.Namespace) -> int:
             sample_index = None
             sample_game = None
             if simulated_games:
-                rng = random.Random(game_seed if game_seed is not None else result.n_simulations)
+                rng = random.Random(effective_game_seed)
                 sample_index = rng.randrange(len(simulated_games)) + 1
                 sample_game = simulated_games[sample_index - 1]
             renderable = format_terminal_report(
