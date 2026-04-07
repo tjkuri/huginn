@@ -281,6 +281,51 @@ class TestMarcelBlend:
         assert result == pytest.approx((5 * 0.25 + 1.0 * 0.20) / (5.0 + 1.0))
 
 
+class TestMarcelHelpers:
+    def test_source_tag_3yr(self):
+        assert _marcel_source_tag(3) == "marcel_3yr"
+
+    def test_source_tag_2yr(self):
+        assert _marcel_source_tag(2) == "marcel_2yr"
+
+    def test_source_tag_1yr(self):
+        assert _marcel_source_tag(1) == "marcel_1yr"
+
+    def test_source_tag_0yr(self):
+        assert _marcel_source_tag(0) == "league_avg"
+
+    def test_overall_league_avg_rates_sum_to_one(self):
+        rates = _overall_league_avg_rates()
+        total = sum(rates[k] for k in ("K", "BB", "HBP", "1B", "2B", "3B", "HR", "OUT"))
+        assert total == pytest.approx(1.0)
+
+    def test_overall_league_avg_rates_all_positive(self):
+        rates = _overall_league_avg_rates()
+        for k, v in rates.items():
+            assert v >= 0.0, f"{k} is negative: {v}"
+
+    def test_apply_marcel_returns_normalized_rates(self):
+        seasons = [(5, {"K": 0.22, "BB": 0.08, "HBP": 0.01, "1B": 0.14, "2B": 0.04, "3B": 0.005, "HR": 0.03, "OUT": 0.465}, 200)]
+        lg = _overall_league_avg_rates()
+        blended, n = _apply_marcel(seasons, _BATTER_REGRESSION_CONSTANTS, lg, _BATTER_NORMALIZER)
+        total = sum(blended[k] for k in ("K", "BB", "HBP", "1B", "2B", "3B", "HR", "OUT"))
+        assert total == pytest.approx(1.0)
+        assert n == 1
+
+    def test_apply_marcel_counts_seasons_with_data(self):
+        lg = _overall_league_avg_rates()
+        rates = {"K": 0.22, "BB": 0.08, "HBP": 0.01, "1B": 0.14, "2B": 0.04, "3B": 0.005, "HR": 0.03, "OUT": 0.465}
+        seasons = [(5, rates, 200), (4, rates, 100), (3, rates, 0)]  # 2024 has zero PA
+        _, n = _apply_marcel(seasons, _BATTER_REGRESSION_CONSTANTS, lg, _BATTER_NORMALIZER)
+        assert n == 2
+
+    def test_apply_marcel_empty_seasons_returns_league_avg(self):
+        lg = _overall_league_avg_rates()
+        blended, n = _apply_marcel([], _BATTER_REGRESSION_CONSTANTS, lg, _BATTER_NORMALIZER)
+        assert n == 0
+        assert blended["K"] == pytest.approx(lg["K"])
+
+
 class TestFetchBattingSplits:
     def test_fetch_batting_splits_converts_stats(self, monkeypatch):
         class FakeFrame:

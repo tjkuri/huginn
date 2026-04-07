@@ -188,11 +188,23 @@ def marcel_blend(
 
 
 def _overall_league_avg_rates() -> dict[str, float]:
-    raise NotImplementedError
+    """Simple average of all four matchup league averages (Marcel regression target for overall rates)."""
+    stats = ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+    matchups = list(LEAGUE_AVERAGES.values())
+    result = {stat: sum(m.get(stat, 0.0) for m in matchups) / len(matchups) for stat in stats}
+    result["OUT"] = 0.0
+    return _normalize_rates(result)
 
 
 def _marcel_source_tag(n_seasons: int) -> str:
-    raise NotImplementedError
+    """Return the Marcel source tag based on how many seasons had usable data."""
+    if n_seasons >= 3:
+        return "marcel_3yr"
+    if n_seasons == 2:
+        return "marcel_2yr"
+    if n_seasons == 1:
+        return "marcel_1yr"
+    return "league_avg"
 
 
 def _apply_marcel(
@@ -201,7 +213,33 @@ def _apply_marcel(
     league_avg_rates: dict[str, float],
     normalizer: float,
 ) -> tuple[dict[str, float], int]:
-    raise NotImplementedError
+    """Apply Marcel blend to all rate stats for one player at one split level.
+
+    Args:
+        seasons: List of (year_coefficient, rates_dict, sample_size).
+        regression_constants: Per-stat regression constants in sample-size equivalents.
+        league_avg_rates: League-average rate dict (regression target).
+        normalizer: 200 for batters (PA), 150 for pitchers (BF).
+
+    Returns:
+        (blended_rates, n_seasons_with_data) where rates are normalized to 1.0.
+    """
+    seasons_with_data = [(yc, rates, pa) for yc, rates, pa in seasons if pa > 0]
+    n = len(seasons_with_data)
+    if n == 0:
+        return dict(league_avg_rates), 0
+
+    blended: dict[str, float] = {}
+    for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR"):
+        season_data = [(yc, rates.get(stat, 0.0), pa) for yc, rates, pa in seasons_with_data]
+        blended[stat] = marcel_blend(
+            season_data,
+            regression_constants[stat],
+            league_avg_rates.get(stat, 0.0),
+            normalizer,
+        )
+    blended["OUT"] = 0.0  # derived by _normalize_rates
+    return _normalize_rates(blended), n
 
 
 def _marcel_batter_player(*args, **kwargs) -> dict | None:
