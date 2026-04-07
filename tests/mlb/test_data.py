@@ -13,13 +13,12 @@ from mlb.data.park_factors import (
 )
 from mlb.data.stats import (
     _apply_marcel,
-    _batting_threshold_for_season,
-    _marcel_batter_player,
-    _marcel_pitcher_player,
     _marcel_source_tag,
     _overall_league_avg_rates,
-    _BATTER_NORMALIZER,
     _BATTER_REGRESSION_CONSTANTS,
+    _BATTER_NORMALIZER,
+    _marcel_batter_player,
+    _marcel_pitcher_player,
     build_batter_stats,
     build_pitcher_stats,
     compute_league_averages,
@@ -564,53 +563,60 @@ class TestFetchBattingSplits:
 
         data = fetch_batting_splits(use_cache=False)
         player = data["sample batter"]
-        assert player["rates"]["K"] == pytest.approx(0.20)
-        assert player["rates"]["BB"] == pytest.approx(0.08)
-        assert player["rates"]["HBP"] == pytest.approx(2 / 150)
-        assert player["rates"]["1B"] == pytest.approx(20 / 150)
+        # Marcel blends rates toward league average, so exact raw rates won't match.
+        # Verify the rates are positive, in plausible range, and sum to 1.
+        assert 0.15 < player["rates"]["K"] < 0.25
+        assert 0.05 < player["rates"]["BB"] < 0.12
+        assert player["rates"]["HBP"] > 0
+        assert player["rates"]["1B"] > 0
         assert sum(player["rates"].values()) == pytest.approx(1.0)
-        assert player["source"] == "2026_overall"
-        assert player["overall"]["source"] == "2026_overall"
+        assert player["source"] == "marcel_3yr"
+        assert player["overall"]["source"] == "marcel_3yr"
 
-    def test_uses_2025_fallback_for_sparse_2026(self, monkeypatch):
+    def test_marcel_blends_sparse_current_season_toward_prior(self, monkeypatch):
+        """A player with sparse 2026 data and good 2025 data should project closer to 2025 rates."""
         class FakeFrame:
             def __init__(self, rows):
                 self.rows = rows
 
             def to_dict(self, orient="records"):
-                assert orient == "records"
                 return self.rows
 
         rows_2026 = [
             {"Name": "Qualified Batter", "PA": 25, "K%": 0.20, "BB%": 0.08, "HBP": 1, "H": 10, "2B": 2, "3B": 0, "HR": 1, "IDfg": 1, "Team": "ABC", "Bat": "R"},
-            {"Name": "Fallback Batter", "PA": 5, "K%": 0.10, "BB%": 0.05, "HBP": 0, "H": 3, "2B": 0, "3B": 0, "HR": 0, "IDfg": 2, "Team": "ABC", "Bat": "L"},
+            {"Name": "Sparse Batter", "PA": 5, "K%": 0.10, "BB%": 0.05, "HBP": 0, "H": 3, "2B": 0, "3B": 0, "HR": 0, "IDfg": 2, "Team": "ABC", "Bat": "L"},
         ]
         rows_2025 = [
             {"Name": "Qualified Batter", "PA": 120, "K%": 0.21, "BB%": 0.09, "HBP": 2, "H": 30, "2B": 5, "3B": 1, "HR": 4, "IDfg": 1, "Team": "ABC", "Bat": "R"},
-            {"Name": "Fallback Batter", "PA": 130, "K%": 0.22, "BB%": 0.11, "HBP": 1, "H": 32, "2B": 6, "3B": 1, "HR": 5, "IDfg": 2, "Team": "ABC", "Bat": "L"},
+            {"Name": "Sparse Batter", "PA": 130, "K%": 0.22, "BB%": 0.11, "HBP": 1, "H": 32, "2B": 6, "3B": 1, "HR": 5, "IDfg": 2, "Team": "ABC", "Bat": "L"},
         ]
 
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
         monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
 
         def fake_batting_stats(season, **kwargs):
             assert "month" not in kwargs
-            return FakeFrame(rows_2026 if season == 2026 else rows_2025)
+            if season == 2026:
+                return FakeFrame(rows_2026)
+            elif season == 2025:
+                return FakeFrame(rows_2025)
+            else:  # 2024 — no data
+                return FakeFrame([])
 
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (fake_batting_stats, None))
 
         data = fetch_batting_splits(season=2026, use_cache=False)
-        assert data["qualified batter"]["source"] == "2026_overall"
-        assert data["qualified batter"]["pa"] == 25
-        assert data["qualified batter"]["splits"] == {}
-        assert data["fallback batter"]["source"] == "2025_overall"
-        assert data["fallback batter"]["pa"] == 130
 
-    def test_early_season_threshold_is_20_pa(self, monkeypatch):
-        monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
-        assert _batting_threshold_for_season(2026) == 20
+        assert data["qualified batter"]["source"] == "marcel_2yr"
+        assert data["sparse batter"]["source"] == "marcel_2yr"
+
+        # Sparse batter: 5 PA in 2026 (K%=0.10), 130 PA in 2025 (K%=0.22)
+        # Marcel heavily weights 2025 → projected K% should be close to 0.22, not 0.10
+        sparse_k = data["sparse batter"]["rates"]["K"]
+        assert abs(sparse_k - 0.22) < abs(sparse_k - 0.10), (
+            f"Marcel K%={sparse_k:.4f} should be closer to 0.22 (2025) than 0.10 (2026)"
+        )
 
     def test_2025_raw_cache_used_on_next_call(self, tmp_path, monkeypatch):
         """After the first scrape, raw_batting-2025.json is loaded instead of re-scraping."""
@@ -630,7 +636,6 @@ class TestFetchBattingSplits:
             return FakeFrame()
 
         monkeypatch.setattr(stats_mod, "_import_pybaseball", lambda: (fake_batting_stats, None))
-        monkeypatch.setattr(stats_mod, "_season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
 
         # First call — scrapes and writes cache
         stats_mod._fetch_batting_season_raw(2025, fake_batting_stats, use_cache=True)
@@ -649,32 +654,35 @@ class TestFetchPitchingSplits:
                 self.rows = rows
 
             def to_dict(self, orient="records"):
-                assert orient == "records"
                 return self.rows
 
         rows_2026 = [
             {"Name": "Qualified Pitcher", "IP": 12.0, "H": 8, "2B": 2, "3B": 0, "HR": 1, "BB": 3, "HBP": 0, "SO": 14, "IDfg": 1, "Team": "ABC", "Throws": "R"},
-            {"Name": "Fallback Pitcher", "IP": 2.0, "H": 3, "2B": 0, "3B": 0, "HR": 0, "BB": 1, "HBP": 0, "SO": 1, "IDfg": 2, "Team": "ABC", "Throws": "L"},
+            {"Name": "Sparse Pitcher", "IP": 2.0, "H": 3, "2B": 0, "3B": 0, "HR": 0, "BB": 1, "HBP": 0, "SO": 1, "IDfg": 2, "Team": "ABC", "Throws": "L"},
         ]
         rows_2025 = [
-            {"Name": "Fallback Pitcher", "IP": 90.0, "H": 70, "2B": 12, "3B": 1, "HR": 10, "BB": 25, "HBP": 2, "SO": 95, "IDfg": 2, "Team": "ABC", "Throws": "L"},
+            {"Name": "Sparse Pitcher", "IP": 90.0, "H": 70, "2B": 12, "3B": 1, "HR": 10, "BB": 25, "HBP": 2, "SO": 95, "IDfg": 2, "Team": "ABC", "Throws": "L"},
         ]
 
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
         monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
 
         def fake_pitching_stats(season, **kwargs):
             assert "month" not in kwargs
-            return FakeFrame(rows_2026 if season == 2026 else rows_2025)
+            if season == 2026:
+                return FakeFrame(rows_2026)
+            elif season == 2025:
+                return FakeFrame(rows_2025)
+            else:  # 2024 — no data
+                return FakeFrame([])
 
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (None, fake_pitching_stats))
 
         data = fetch_pitching_splits(season=2026, use_cache=False)
-        assert data["qualified pitcher"]["source"] == "2026_overall"
+        assert data["qualified pitcher"]["source"] == "marcel_1yr"
         assert data["qualified pitcher"]["splits"] == {}
-        assert data["fallback pitcher"]["source"] == "2025_overall"
+        assert data["sparse pitcher"]["source"] == "marcel_2yr"
 
     def test_overall_only_mode_keeps_split_keys_empty(self, monkeypatch):
         class FakeFrame:
@@ -691,7 +699,6 @@ class TestFetchPitchingSplits:
 
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._season_date_today", lambda: __import__("datetime").date(2026, 4, 2))
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (None, lambda season, **kwargs: FakeFrame(rows)))
         monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
 
