@@ -46,10 +46,50 @@ This is a rough reconstruction:
 - `IP × 3` = outs recorded
 - `H + BB + HBP` = hitters who reached without recording an out
 
-If a player does not have a usable handedness split, the model falls back to:
-1. current-year overall
-2. prior-year data if available and above threshold
-3. league-average matchup rates
+Player projections are built with Marcel 3-season regression. For each rate stat independently:
+
+```
+w1 = 5 × (PA_2026 / normalizer)
+w2 = 4 × (PA_2025 / normalizer)
+w3 = 3 × (PA_2024 / normalizer)
+w_lg = regression_constant / normalizer
+
+projected_rate = (w1×r_2026 + w2×r_2025 + w3×r_2024 + w_lg×league_avg)
+                 / (w1 + w2 + w3 + w_lg)
+```
+
+The normalizer is **200 PA** for batters and **150 BF** for pitchers. A missing season contributes
+weight zero and drops out naturally.
+
+Batter regression constants (Tango's original values, in PA equivalents):
+
+| Stat | Constant | Interpretation |
+|------|----------|----------------|
+| K%   | 150      | moderately stable |
+| BB%  | 200      | stable |
+| HR%  | 320      | high variance, regresses a lot |
+| 1B%  | 200      | stable |
+| 2B%  | 400      | less reliable than K/BB |
+| 3B%  | 800      | very noisy, heavily regressed |
+| HBP% | 400      | noisy |
+
+OUT% is not independently projected — it is derived as `1 − sum(other rates)`.
+
+Pitchers use a single regression constant of **150 BF** for all rate stats (v1).
+
+**Concrete example — HR%, two seasons:**
+
+A hitter with 400 PA in 2025 at HR%=0.040 and 60 PA in 2026 at HR%=0.020, league avg HR%=0.033:
+- w1 = 5 × (60/200) = 1.5, w2 = 4 × (400/200) = 8.0, w_lg = 320/200 = 1.6
+- projected = (1.5×0.020 + 8.0×0.040 + 1.6×0.033) / (1.5 + 8.0 + 1.6)
+- = (0.030 + 0.320 + 0.053) / 11.1 ≈ **0.0363**
+
+The 2025 season dominates because it has 6.7× more weight than the thin 2026 sample.
+
+Overall projections use overall season rows. Handedness split projections use the matching
+split rows (`vs LHP`, `vs RHP`, `vs LHB`, `vs RHB`) when available, with split PA as the
+sample size. If split rows are missing, the matchup selection path falls back to the
+player's overall projected profile.
 
 ### Step 1 — Pick the right league average
 

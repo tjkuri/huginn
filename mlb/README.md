@@ -77,7 +77,7 @@ Per-player stats averaged across all simulations, matchup-adjusted for the speci
 - `QS%` — quality start probability (6+ IP, ≤3 ER)
 
 ### Data Quality Notes
-Warns when players are using fallback data (prior-year stats or league averages instead of current-year data), and when weather is still using the default placeholder instead of a real feed.
+Warns when players are using thin-data or league-average projections, and when weather is still using the default placeholder instead of a real feed. Player source tags now reflect the Marcel blend depth (`marcel_3yr`, `marcel_2yr`, `marcel_1yr`, `league_avg`) rather than a hard switch to a single prior season.
 
 ## Methodology
 
@@ -127,7 +127,7 @@ After N simulations (default 10,000):
 
 **League average fallback chain:** computed from current-season overall pybaseball leaderboards plus FanGraphs handedness split pages → `computed_league_averages-{season}.json` cache → hardcoded constants in `config.py` with a warning.
 
-**Player fallback chain:** current-year stats (early season: ≥20 PA / 10 IP through April 30; otherwise ≥50 PA / 20 IP) → prior-year stats (≥10 PA / 5 IP) → league average. The data quality panel reports how many players are on each tier.
+**Player projection model:** batter and pitcher rates are Marcel-style 3-season regressions. Overall and split rates are blended from 2026, 2025, and 2024 with recency weights (`5/4/3`) scaled by sample size, then regressed toward a league baseline. Missing seasons naturally contribute zero weight. Completely unknown players still fall back to league-average rates.
 
 ### Current Data Flow
 
@@ -165,10 +165,16 @@ After N simulations (default 10,000):
   - Add `opportunities * outcome_rate` to each outcome total.
   - Divide each outcome total by total matchup opportunities.
 
-- If a player does not have a usable handedness split, the model can fall back to:
-  - their overall profile
-  - prior-year data if available and above threshold
-  - league-average matchup rates for that handedness combination
+- Marcel is applied to both overall and handedness split rows.
+  - Overall projections blend up to three seasons of overall data.
+  - Split projections blend up to three seasons of `vs LHP` / `vs RHP` or `vs LHB` / `vs RHB` data.
+  - If split rows are unavailable, the simulation path falls back to the player's overall projected rates for that handedness selection.
+
+- Merged player profiles carry Marcel-based source tags.
+  - `marcel_3yr` = all three seasons contributed
+  - `marcel_2yr` = two seasons contributed
+  - `marcel_1yr` = one season contributed
+  - `league_avg` = no real player data was available
 
 ### Key Design Decisions
 
