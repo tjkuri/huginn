@@ -399,12 +399,17 @@ def _build_quality_panel(game_context: GameContext, data_warnings: list[str]):
     batter_sources = _players_by_source(batters)
     pitcher_sources = _players_by_source(pitchers)
     default_weather = _is_default_weather(game_context)
+    away_lineup_fallback = game_context.away_lineup_source == "fallback_roster_order"
+    home_lineup_fallback = game_context.home_lineup_source == "fallback_roster_order"
+    away_starter_fallback = game_context.away_starter_source == "first_roster_arm"
+    home_starter_fallback = game_context.home_starter_source == "first_roster_arm"
 
     has_player_warnings = bool(
         batter_sources.get("2025") or batter_sources.get("league_avg") or
         pitcher_sources.get("2025") or pitcher_sources.get("league_avg")
     )
-    if not has_player_warnings and not data_warnings and not default_weather:
+    has_lineup_warnings = away_lineup_fallback or home_lineup_fallback or away_starter_fallback or home_starter_fallback
+    if not has_player_warnings and not data_warnings and not default_weather and not has_lineup_warnings:
         return None
 
     lines: list[Text] = []
@@ -436,6 +441,17 @@ def _build_quality_panel(game_context: GameContext, data_warnings: list[str]):
     add_source_group(batter_sources, "league_avg", "batter", "league-average fallback", "⚠", "bright_yellow")
     add_source_group(pitcher_sources, "2025", "pitcher", "2025 stats", "⚠", "yellow")
     add_source_group(pitcher_sources, "league_avg", "pitcher", "league-average fallback", "⚠", "bright_yellow")
+
+    if away_lineup_fallback:
+        lines.append(Text("⚠ Away lineup: fallback active-roster order (confirmed lineup unavailable)", style="yellow"))
+    if home_lineup_fallback:
+        lines.append(Text("⚠ Home lineup: fallback active-roster order (confirmed lineup unavailable)", style="yellow"))
+    if away_lineup_fallback or home_lineup_fallback:
+        lines.append(Text("  Fallback lineups may differ materially from the eventual batting order.", style="yellow"))
+    if away_starter_fallback:
+        lines.append(Text("⚠ Away starter: roster fallback (no probable pitcher listed)", style="yellow"))
+    if home_starter_fallback:
+        lines.append(Text("⚠ Home starter: roster fallback (no probable pitcher listed)", style="yellow"))
 
     lines.append(Text(f"✓ Park factors: {game_context.park_factors.venue_name}", style="green"))
     if default_weather:

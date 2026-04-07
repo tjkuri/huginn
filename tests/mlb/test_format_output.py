@@ -301,3 +301,155 @@ def test_rich_report_shows_quality_panel_for_missing_players_only():
 
     assert "DATA QUALITY" in output
     assert "Weather" in output
+
+
+def test_rich_report_shows_lineup_fallback_warnings():
+    away_pitcher = _pitcher("ap", "Away Starter")
+    home_pitcher = _pitcher("hp", "Home Starter")
+    away_batter = _batter("ab", "Away Batter")
+    home_batter = _batter("hb", "Home Batter")
+    context = GameContext(
+        game_id="g4",
+        date="2026-04-04",
+        away_lineup=Lineup(
+            team_id="away",
+            team_name="Synthetic Away",
+            batting_order=[away_batter] + [_batter(f"ab{i}", f"Away Batter {i}") for i in range(2, 10)],
+            starting_pitcher=away_pitcher,
+            bullpen=[_bullpen("abp", "Synthetic Away Bullpen")],
+        ),
+        home_lineup=Lineup(
+            team_id="home",
+            team_name="Synthetic Home",
+            batting_order=[home_batter] + [_batter(f"hb{i}", f"Home Batter {i}") for i in range(2, 10)],
+            starting_pitcher=home_pitcher,
+            bullpen=[_bullpen("hbp", "Synthetic Home Bullpen")],
+        ),
+        park_factors=ParkFactors(
+            venue_id="v1",
+            venue_name="Test Park",
+            factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+            factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+        ),
+        weather=Weather(70.0, 4.0, WindDirection.CROSS, 45.0, is_indoor=False),
+        away_lineup_source="fallback_roster_order",
+        home_lineup_source="confirmed",
+    )
+
+    games = [
+        SimulatedGame(
+            game_id="g-1",
+            away_runs=1,
+            home_runs=2,
+            away_hits=1,
+            home_hits=1,
+            pa_results=[_pa(Outcome.SINGLE, "ab", "hp"), _pa(Outcome.OUT, "hb", "ap")],
+            innings_played=9,
+            inning_scores={"away": [0] * 9, "home": [0] * 9},
+        )
+    ]
+    run_dists = compute_run_distributions(games)
+    win_probs = compute_win_probability(games)
+    player_stats = compute_player_stats(games)
+    result = SimulationResult(
+        game_id=context.game_id,
+        n_simulations=len(games),
+        away_team=context.away_lineup.team_name,
+        home_team=context.home_lineup.team_name,
+        away_runs_mean=run_dists["away_runs"]["mean"],
+        away_runs_std=run_dists["away_runs"]["std"],
+        home_runs_mean=run_dists["home_runs"]["mean"],
+        home_runs_std=run_dists["home_runs"]["std"],
+        total_runs_mean=run_dists["total_runs"]["mean"],
+        total_runs_std=run_dists["total_runs"]["std"],
+        home_win_pct=win_probs["home_win_pct"],
+        away_win_pct=win_probs["away_win_pct"],
+        player_stats=player_stats,
+        betting_lines=compute_betting_lines(games, run_dists),
+        run_distributions=run_dists,
+    )
+
+    renderable = format_output.build_terminal_output(result, context, None, None, [], games)
+    console = Console(width=90, record=True)
+    console.print(renderable)
+    output = console.export_text()
+
+    assert "DATA QUALITY" in output
+    assert "Away lineup: fallback active-roster order" in output
+    assert "Fallback lineups may differ materially from the eventual batting order." in output
+    assert "Home lineup: fallback active-roster order" not in output
+
+
+def test_rich_report_shows_first_roster_arm_warning_only():
+    away_pitcher = _pitcher("ap", "Away Starter")
+    home_pitcher = _pitcher("hp", "Home Starter")
+    away_batter = _batter("ab", "Away Batter")
+    home_batter = _batter("hb", "Home Batter")
+    context = GameContext(
+        game_id="g5",
+        date="2026-04-04",
+        away_lineup=Lineup(
+            team_id="away",
+            team_name="Synthetic Away",
+            batting_order=[away_batter] + [_batter(f"ab{i}", f"Away Batter {i}") for i in range(2, 10)],
+            starting_pitcher=away_pitcher,
+            bullpen=[_bullpen("abp", "Synthetic Away Bullpen")],
+        ),
+        home_lineup=Lineup(
+            team_id="home",
+            team_name="Synthetic Home",
+            batting_order=[home_batter] + [_batter(f"hb{i}", f"Home Batter {i}") for i in range(2, 10)],
+            starting_pitcher=home_pitcher,
+            bullpen=[_bullpen("hbp", "Synthetic Home Bullpen")],
+        ),
+        park_factors=ParkFactors(
+            venue_id="v1",
+            venue_name="Test Park",
+            factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+            factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+        ),
+        weather=Weather(70.0, 4.0, WindDirection.CROSS, 45.0, is_indoor=False),
+        away_starter_source="first_roster_arm",
+        home_starter_source="probable",
+    )
+
+    games = [
+        SimulatedGame(
+            game_id="g-1",
+            away_runs=1,
+            home_runs=2,
+            away_hits=1,
+            home_hits=1,
+            pa_results=[_pa(Outcome.SINGLE, "ab", "hp"), _pa(Outcome.OUT, "hb", "ap")],
+            innings_played=9,
+            inning_scores={"away": [0] * 9, "home": [0] * 9},
+        )
+    ]
+    run_dists = compute_run_distributions(games)
+    win_probs = compute_win_probability(games)
+    player_stats = compute_player_stats(games)
+    result = SimulationResult(
+        game_id=context.game_id,
+        n_simulations=len(games),
+        away_team=context.away_lineup.team_name,
+        home_team=context.home_lineup.team_name,
+        away_runs_mean=run_dists["away_runs"]["mean"],
+        away_runs_std=run_dists["away_runs"]["std"],
+        home_runs_mean=run_dists["home_runs"]["mean"],
+        home_runs_std=run_dists["home_runs"]["std"],
+        total_runs_mean=run_dists["total_runs"]["mean"],
+        total_runs_std=run_dists["total_runs"]["std"],
+        home_win_pct=win_probs["home_win_pct"],
+        away_win_pct=win_probs["away_win_pct"],
+        player_stats=player_stats,
+        betting_lines=compute_betting_lines(games, run_dists),
+        run_distributions=run_dists,
+    )
+
+    renderable = format_output.build_terminal_output(result, context, None, None, [], games)
+    console = Console(width=90, record=True)
+    console.print(renderable)
+    output = console.export_text()
+
+    assert "Away starter: roster fallback (no probable pitcher listed)" in output
+    assert "Home starter: roster fallback" not in output

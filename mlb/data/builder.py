@@ -158,13 +158,17 @@ def _resolve_lineup(game_info: dict) -> dict:
     home_probable = str(game_info.get("home_probable_pitcher") or "").strip()
 
     if lineup is not None:
+        away_starter_source = "boxscore"
+        home_starter_source = "boxscore"
         if away_probable:
             throws = (lineup.get("away_pitcher") or {}).get("throws", "R")
             lineup = dict(lineup, away_pitcher={"name": away_probable, "id": "", "throws": throws})
+            away_starter_source = "probable"
             logger.info("Using probable starter %r for %s", away_probable, game_info.get("away_team", "away"))
         if home_probable:
             throws = (lineup.get("home_pitcher") or {}).get("throws", "R")
             lineup = dict(lineup, home_pitcher={"name": home_probable, "id": "", "throws": throws})
+            home_starter_source = "probable"
             logger.info("Using probable starter %r for %s", home_probable, game_info.get("home_team", "home"))
 
         # Enrich batter handedness from roster — boxscore_data does not carry batSide.
@@ -175,7 +179,13 @@ def _resolve_lineup(game_info: dict) -> dict:
         for b in lineup["home_batters"]:
             b["bats"] = home_bats.get(b["id"], b.get("bats", "R"))
 
-        return lineup
+        return dict(
+            lineup,
+            away_lineup_source="confirmed",
+            home_lineup_source="confirmed",
+            away_starter_source=away_starter_source,
+            home_starter_source=home_starter_source,
+        )
 
     away_batters, roster_away_pitcher = build_default_lineup_from_roster(
         int(game_info["away_team_id"]),
@@ -196,6 +206,8 @@ def _resolve_lineup(game_info: dict) -> dict:
         if home_probable
         else roster_home_pitcher
     )
+    away_starter_source = "probable" if away_probable else "first_roster_arm"
+    home_starter_source = "probable" if home_probable else "first_roster_arm"
 
     if away_probable:
         logger.info("Using probable starter %r for %s", away_probable, game_info.get("away_team", "away"))
@@ -219,6 +231,10 @@ def _resolve_lineup(game_info: dict) -> dict:
         "home_batters": home_batters,
         "away_pitcher": away_pitcher,
         "home_pitcher": home_pitcher,
+        "away_lineup_source": "fallback_roster_order",
+        "home_lineup_source": "fallback_roster_order",
+        "away_starter_source": away_starter_source,
+        "home_starter_source": home_starter_source,
     }
 
 
@@ -262,4 +278,8 @@ def build_game_context(
         home_lineup=home_lineup,
         park_factors=get_park_factors(venue_name),
         weather=get_game_weather(venue_name, str(game_info.get("game_datetime") or "")),
+        away_lineup_source=str(lineup_info.get("away_lineup_source") or "confirmed"),
+        home_lineup_source=str(lineup_info.get("home_lineup_source") or "confirmed"),
+        away_starter_source=str(lineup_info.get("away_starter_source") or "boxscore"),
+        home_starter_source=str(lineup_info.get("home_starter_source") or "boxscore"),
     )

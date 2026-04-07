@@ -526,6 +526,10 @@ class TestBuildGameContext:
         assert context.home_lineup.bullpen[0].name == "Houston Astros Bullpen"
         assert context.weather is not None
         assert context.weather.is_indoor is True
+        assert context.away_lineup_source == "confirmed"
+        assert context.home_lineup_source == "confirmed"
+        assert context.away_starter_source == "boxscore"
+        assert context.home_starter_source == "boxscore"
 
     def test_missing_player_falls_back_to_league_average(self, monkeypatch, caplog):
         game_info = {
@@ -589,6 +593,51 @@ class TestBuildGameContext:
         assert sum(context.away_lineup.batting_order[-1].rates.values()) == pytest.approx(1.0)
         assert any("Missing batting data for Away Batter 9" in record.message for record in caplog.records)
         assert context.away_lineup.bullpen[0].name == "Away Team Bullpen"
+
+    def test_roster_fallback_tags_lineup_and_starter_sources(self, monkeypatch):
+        game_info = {
+            "game_id": "1",
+            "away_team": "Away Team",
+            "away_team_id": "10",
+            "home_team": "Home Team",
+            "home_team_id": "20",
+            "game_datetime": "2026-04-03T19:10:00Z",
+            "venue": "Wrigley Field",
+            "status": "Scheduled",
+            "away_probable_pitcher": "",
+            "home_probable_pitcher": "Home Probable",
+        }
+        roster = [
+            {"name": f"Batter {i}", "id": f"b{i}", "position": "1B", "bats": "R", "throws": "R"}
+            for i in range(1, 10)
+        ] + [{"name": "Roster Arm", "id": "p1", "position": "P", "bats": "R", "throws": "L"}]
+        batting_data = {f"batter {i}": _raw_batter(name=f"Batter {i}", bats="R") for i in range(1, 10)}
+        pitching_data = {
+            "roster arm": _raw_pitcher(name="Roster Arm", throws="L"),
+            "home probable": _raw_pitcher(name="Home Probable", throws="R"),
+        }
+
+        monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: None)
+        monkeypatch.setattr("mlb.data.lineups.fetch_team_roster", lambda team_id, season=2026: roster)
+        monkeypatch.setattr("mlb.data.builder.ensure_runtime_league_averages", lambda season=2026: None)
+        monkeypatch.setattr("mlb.data.builder.fetch_team_bullpen_stats", lambda season=2026: {})
+        monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "")
+        monkeypatch.setattr(
+            "mlb.data.builder.get_park_factors",
+            lambda venue_name: ParkFactors(
+                venue_id=venue_name,
+                venue_name=venue_name,
+                factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+            ),
+        )
+
+        context = build_game_context(game_info, batting_data, pitching_data)
+
+        assert context.away_lineup_source == "fallback_roster_order"
+        assert context.home_lineup_source == "fallback_roster_order"
+        assert context.away_starter_source == "first_roster_arm"
+        assert context.home_starter_source == "probable"
 
 
 class TestNormalizeName:
