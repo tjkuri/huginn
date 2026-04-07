@@ -35,6 +35,18 @@ _EARLY_SEASON_BATTER_PA = 20
 _EARLY_SEASON_PITCHER_IP = 10.0
 _SPLIT_MONTH_VS_LEFT = 13
 _SPLIT_MONTH_VS_RIGHT = 14
+_BATTER_REGRESSION_CONSTANTS: dict[str, float] = {
+    "BB": 200.0,
+    "K": 150.0,
+    "HR": 320.0,
+    "1B": 200.0,
+    "2B": 400.0,
+    "3B": 800.0,
+    "HBP": 400.0,
+}
+_PITCHER_REGRESSION_CONSTANT = 150.0
+_BATTER_NORMALIZER = 200.0
+_PITCHER_NORMALIZER = 150.0
 _FANGRAPHS_LEGACY_URL = "https://www.fangraphs.com/leaders-legacy.aspx"
 _FANGRAPHS_PAGE_SIZE = 30
 _MLB_PEOPLE_URL = "https://statsapi.mlb.com/api/v1/people"
@@ -136,6 +148,68 @@ def _save_computed_cache(kind: str, season: int, payload: dict[str, Any]) -> Non
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
     logger.debug("Computed cache written: %s", path)
+
+
+# ── Marcel regression ────────────────────────────────────────────────────────
+
+
+def marcel_blend(
+    seasons: list[tuple[int, float, float]],
+    regression_constant: float,
+    league_avg: float,
+    normalizer: float = 200.0,
+) -> float:
+    """Marcel projection for a single rate stat.
+
+    Pure function — no I/O, no side effects.
+
+    Args:
+        seasons: List of (year_coefficient, observed_rate, sample_size) per season.
+                 year_coefficient is 5 (current), 4 (prior), 3 (two-prior).
+                 Missing seasons are excluded from the list.
+        regression_constant: Regression weight in sample-size equivalents.
+        league_avg: League-average rate (regression target).
+        normalizer: 200 for batters (PA), 150 for pitchers (BF).
+
+    Returns:
+        Marcel-projected rate.
+    """
+    total_num = sum(yc * (pa / normalizer) * rate for yc, rate, pa in seasons)
+    total_den = sum(yc * (pa / normalizer) for yc, rate, pa in seasons)
+    w_lg = regression_constant / normalizer
+    total_num += w_lg * league_avg
+    total_den += w_lg
+    if total_den <= 0:
+        return league_avg
+    return total_num / total_den
+
+
+# Stubs — to be implemented in later tasks
+
+
+def _overall_league_avg_rates() -> dict[str, float]:
+    raise NotImplementedError
+
+
+def _marcel_source_tag(n_seasons: int) -> str:
+    raise NotImplementedError
+
+
+def _apply_marcel(
+    seasons: list[tuple[int, dict[str, float], float]],
+    regression_constants: dict[str, float],
+    league_avg_rates: dict[str, float],
+    normalizer: float,
+) -> tuple[dict[str, float], int]:
+    raise NotImplementedError
+
+
+def _marcel_batter_player(*args, **kwargs) -> dict | None:
+    raise NotImplementedError
+
+
+def _marcel_pitcher_player(*args, **kwargs) -> dict | None:
+    raise NotImplementedError
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

@@ -12,12 +12,20 @@ from mlb.data.park_factors import (
     get_venue_for_team,
 )
 from mlb.data.stats import (
+    _apply_marcel,
     _batting_threshold_for_season,
+    _marcel_batter_player,
+    _marcel_pitcher_player,
+    _marcel_source_tag,
+    _overall_league_avg_rates,
+    _BATTER_NORMALIZER,
+    _BATTER_REGRESSION_CONSTANTS,
     build_batter_stats,
     build_pitcher_stats,
     compute_league_averages,
     fetch_batting_splits,
     fetch_pitching_splits,
+    marcel_blend,
 )
 from mlb.data.lineups import fetch_todays_games
 from mlb.data.weather import get_game_weather
@@ -226,6 +234,51 @@ class TestWeather:
     def test_outdoor(self):
         weather = get_game_weather("Wrigley Field", "2026-04-03T19:10:00Z")
         assert weather.is_indoor is False
+
+
+class TestMarcelBlend:
+    def test_returns_league_avg_when_no_seasons(self):
+        result = marcel_blend([], regression_constant=200.0, league_avg=0.10, normalizer=200.0)
+        assert result == pytest.approx(0.10)
+
+    def test_single_full_season_regresses_toward_league_avg(self):
+        # w_player = 5 * (200/200) = 5.0
+        # w_lg = 200/200 = 1.0  (regression_constant=200, normalizer=200)
+        # projected = (5*0.15 + 1*0.10) / (5+1) = 0.8500/6 = 0.14167
+        result = marcel_blend([(5, 0.15, 200)], regression_constant=200.0, league_avg=0.10, normalizer=200.0)
+        assert result == pytest.approx((5 * 0.15 + 1.0 * 0.10) / (5.0 + 1.0))
+
+    def test_three_seasons_weighted_blend(self):
+        # w1=5*(100/200)=2.5, w2=4*(100/200)=2.0, w3=3*(100/200)=1.5, w_lg=320/200=1.6
+        w1, w2, w3, w_lg = 2.5, 2.0, 1.5, 320 / 200
+        lg = 0.033
+        expected = (w1 * 0.040 + w2 * 0.035 + w3 * 0.030 + w_lg * lg) / (w1 + w2 + w3 + w_lg)
+        result = marcel_blend(
+            [(5, 0.040, 100), (4, 0.035, 100), (3, 0.030, 100)],
+            regression_constant=320.0,
+            league_avg=lg,
+            normalizer=200.0,
+        )
+        assert result == pytest.approx(expected)
+
+    def test_zero_pa_season_contributes_no_weight(self):
+        # Passing season with pa=0: w = 4*(0/200)=0 — same result as omitting it
+        result_with = marcel_blend([(5, 0.20, 200), (4, 0.30, 0)], regression_constant=150.0, league_avg=0.22, normalizer=200.0)
+        result_without = marcel_blend([(5, 0.20, 200)], regression_constant=150.0, league_avg=0.22, normalizer=200.0)
+        assert result_with == pytest.approx(result_without)
+
+    def test_higher_regression_constant_pulls_more_toward_league_avg(self):
+        # K% (150) vs HR% (320): same observed rate, same league avg, same PA
+        # More regression → stronger pull toward 0.05
+        k_result = marcel_blend([(5, 0.10, 200)], regression_constant=150.0, league_avg=0.05, normalizer=200.0)
+        hr_result = marcel_blend([(5, 0.10, 200)], regression_constant=320.0, league_avg=0.05, normalizer=200.0)
+        assert hr_result < k_result  # HR% regresses more
+
+    def test_pitcher_normalizer_150(self):
+        # BF normalizer for pitchers is 150 not 200
+        # w_player = 5*(150/150)=5.0, w_lg=150/150=1.0
+        result = marcel_blend([(5, 0.25, 150)], regression_constant=150.0, league_avg=0.20, normalizer=150.0)
+        assert result == pytest.approx((5 * 0.25 + 1.0 * 0.20) / (5.0 + 1.0))
 
 
 class TestFetchBattingSplits:
