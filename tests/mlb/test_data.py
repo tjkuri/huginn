@@ -23,6 +23,7 @@ from mlb.data.stats import (
     build_pitcher_stats,
     compute_league_averages,
     fetch_batting_splits,
+    fetch_runtime_overall_league_averages,
     fetch_pitching_splits,
     marcel_blend,
 )
@@ -704,6 +705,145 @@ class TestFetchPitchingSplits:
 
         data = fetch_pitching_splits(season=2026, use_cache=False)
         assert data["sample pitcher"]["splits"] == {}
+
+
+class TestRuntimeLeagueAverages:
+    def test_runtime_overall_league_averages_use_stale_cache_when_fresh_fetch_fails(self, monkeypatch, tmp_path):
+        import json
+        import mlb.data.stats as stats_mod
+
+        payload = {
+            "season": 2026,
+            "rates": {"K": 0.21, "BB": 0.08, "HBP": 0.01, "1B": 0.14, "2B": 0.04, "3B": 0.005, "HR": 0.03, "OUT": 0.485},
+            "matchup_rates": {"L_vs_R": {"K": 0.2, "BB": 0.08, "HBP": 0.01, "1B": 0.15, "2B": 0.04, "3B": 0.005, "HR": 0.03, "OUT": 0.485}},
+        }
+        stale_path = tmp_path / "computed_league_averages-2026.json"
+        stale_path.write_text(json.dumps(payload))
+
+        monkeypatch.setattr(stats_mod, "_COMPUTED_LEAGUE_AVERAGE_CACHE", {})
+        monkeypatch.setattr(stats_mod, "_MATCHUP_LEAGUE_AVERAGE_CACHE", {})
+        monkeypatch.setattr(stats_mod, "_load_computed_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr(stats_mod, "_computed_cache_path", lambda *args, **kwargs: stale_path)
+        monkeypatch.setattr(
+            stats_mod,
+            "fetch_computed_league_averages",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        rates = fetch_runtime_overall_league_averages(season=2026, use_cache=True)
+
+        assert rates["K"] == pytest.approx(0.21)
+        assert rates["HR"] == pytest.approx(0.03)
+
+    def test_runtime_overall_league_averages_fall_back_to_hardcoded_proxy(self, monkeypatch):
+        import mlb.data.stats as stats_mod
+        from pathlib import Path
+
+        monkeypatch.setattr(stats_mod, "_COMPUTED_LEAGUE_AVERAGE_CACHE", {})
+        monkeypatch.setattr(stats_mod, "_MATCHUP_LEAGUE_AVERAGE_CACHE", {})
+        monkeypatch.setattr(stats_mod, "_load_computed_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr(stats_mod, "_computed_cache_path", lambda *args, **kwargs: Path("/tmp/does-not-exist-runtime-overall.json"))
+        monkeypatch.setattr(
+            stats_mod,
+            "fetch_computed_league_averages",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        rates = fetch_runtime_overall_league_averages(season=2026, use_cache=True)
+
+        expected = _overall_league_avg_rates()
+        assert rates["K"] == pytest.approx(expected["K"])
+        assert rates["BB"] == pytest.approx(expected["BB"])
+        assert rates["HR"] == pytest.approx(expected["HR"])
+        assert sum(rates[k] for k in ("K", "BB", "HBP", "1B", "2B", "3B", "HR", "OUT")) == pytest.approx(1.0)
+
+    def test_batting_splits_use_runtime_overall_league_average_helper(self, monkeypatch):
+        class FakeFrame:
+            def to_dict(self, orient="records"):
+                return [
+                    {
+                        "Name": "Sample Batter",
+                        "PA": 150,
+                        "K%": 0.20,
+                        "BB%": 0.08,
+                        "HBP": 2,
+                        "H": 29,
+                        "2B": 5,
+                        "3B": 1,
+                        "HR": 3,
+                        "IDfg": 123,
+                        "Team": "ABC",
+                        "Bat": "L",
+                    }
+                ]
+
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (lambda season, **kwargs: FakeFrame(), None))
+        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr(
+            "mlb.data.stats.fetch_computed_league_averages",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("strict helper should not be called")),
+        )
+        monkeypatch.setattr("mlb.data.stats.fetch_runtime_overall_league_averages", lambda *args, **kwargs: _overall_league_avg_rates())
+
+        data = fetch_batting_splits(season=2026, use_cache=False)
+
+        assert "sample batter" in data
+
+    def test_pitching_splits_use_runtime_overall_league_average_helper(self, monkeypatch):
+        class FakeFrame:
+            def to_dict(self, orient="records"):
+                return [
+                    {
+                        "Name": "Sample Pitcher",
+                        "IP": 25.0,
+                        "H": 20,
+                        "2B": 3,
+                        "3B": 0,
+                        "HR": 2,
+                        "BB": 5,
+                        "HBP": 1,
+                        "SO": 28,
+                        "IDfg": 1,
+                        "Team": "ABC",
+                        "Throws": "R",
+                    }
+                ]
+
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (None, lambda season, **kwargs: FakeFrame()))
+        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr(
+            "mlb.data.stats.fetch_computed_league_averages",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("strict helper should not be called")),
+        )
+        monkeypatch.setattr("mlb.data.stats.fetch_runtime_overall_league_averages", lambda *args, **kwargs: _overall_league_avg_rates())
+
+        data = fetch_pitching_splits(season=2026, use_cache=False)
+
+        assert "sample pitcher" in data
+
+    def test_runtime_matchup_league_averages_fall_back_to_hardcoded_constants(self, monkeypatch):
+        import mlb.data.stats as stats_mod
+        from pathlib import Path
+        from mlb.config import LEAGUE_AVERAGES
+
+        monkeypatch.setattr(stats_mod, "_COMPUTED_LEAGUE_AVERAGE_CACHE", {})
+        monkeypatch.setattr(stats_mod, "_MATCHUP_LEAGUE_AVERAGE_CACHE", {})
+        monkeypatch.setattr(stats_mod, "_load_computed_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr(stats_mod, "_computed_cache_path", lambda *args, **kwargs: Path("/tmp/does-not-exist-runtime-matchup.json"))
+        monkeypatch.setattr(
+            stats_mod,
+            "_compute_league_averages_and_matchups",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        matchups = stats_mod.fetch_runtime_league_averages(season=2026, use_cache=True)
+
+        assert matchups[(Hand.LEFT, Hand.RIGHT)]["K"] == pytest.approx(LEAGUE_AVERAGES[(Hand.LEFT, Hand.RIGHT)]["K"])
+        assert matchups[(Hand.RIGHT, Hand.LEFT)]["HR"] == pytest.approx(LEAGUE_AVERAGES[(Hand.RIGHT, Hand.LEFT)]["HR"])
 
 
 class TestFetchTodaysGames:

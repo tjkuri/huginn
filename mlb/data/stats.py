@@ -1191,12 +1191,8 @@ def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[s
     s2_players = _fetch_batting_season_raw(season - 1, batting_stats, use_cache)
     s3_players = _fetch_batting_season_raw(season - 2, batting_stats, use_cache)
 
-    # Fetch the true PA-weighted overall league average for Marcel regression target.
-    # Fall back to the equal-weight proxy if unavailable (e.g., during tests).
-    try:
-        overall_lg: dict[str, float] | None = fetch_computed_league_averages(season=season, use_cache=use_cache)
-    except Exception:
-        overall_lg = None
+    # Runtime helper already degrades through cache and hardcoded fallback.
+    overall_lg = fetch_runtime_overall_league_averages(season=season, use_cache=use_cache)
 
     # Each season/split combination fails independently so one 403 doesn't discard all splits.
     split_results: dict[tuple[int, str], dict[str, dict]] = {}
@@ -1251,12 +1247,8 @@ def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[
     s2_players = _fetch_pitching_season_raw(season - 1, pitching_stats, use_cache)
     s3_players = _fetch_pitching_season_raw(season - 2, pitching_stats, use_cache)
 
-    # Fetch the true PA-weighted overall league average for Marcel regression target.
-    # Fall back to the equal-weight proxy if unavailable (e.g., during tests).
-    try:
-        overall_lg: dict[str, float] | None = fetch_computed_league_averages(season=season, use_cache=use_cache)
-    except Exception:
-        overall_lg = None
+    # Runtime helper already degrades through cache and hardcoded fallback.
+    overall_lg = fetch_runtime_overall_league_averages(season=season, use_cache=use_cache)
 
     # Each season/split combination fails independently so one 403 doesn't discard all splits.
     split_results: dict[tuple[int, str], dict[str, dict]] = {}
@@ -1364,7 +1356,12 @@ def compute_matchup_league_averages_from_raw_splits(
 
 
 def fetch_computed_league_averages(season: int = SEASON, use_cache: bool = True) -> dict[str, float]:
-    """Fetch and cache overall league averages computed from raw pybaseball leaderboards."""
+    """Strict helper: compute overall league averages from leaderboard data.
+
+    This function is intentionally strict. Runtime simulation paths should use
+    `fetch_runtime_overall_league_averages()` or `fetch_runtime_league_averages()`
+    so fresh-fetch failures can degrade through cache or hardcoded fallbacks.
+    """
     cache_key = (season, use_cache)
     cached = _COMPUTED_LEAGUE_AVERAGE_CACHE.get(cache_key)
     if cached is not None:
@@ -1418,6 +1415,76 @@ def fetch_computed_league_averages(season: int = SEASON, use_cache: bool = True)
     return rates
 
 
+def _compute_league_averages_and_matchups(
+    season: int,
+    use_cache: bool,
+) -> tuple[dict[str, float], dict[tuple[Hand, Hand], dict[str, float]]]:
+    """Strict helper that computes both overall and matchup league averages."""
+    rates = fetch_computed_league_averages(season=season, use_cache=use_cache)
+    cache_key = (season, use_cache)
+    matchup_rates = _MATCHUP_LEAGUE_AVERAGE_CACHE.get(cache_key)
+    if matchup_rates is None:
+        raise KeyError(f"Missing matchup league averages for season={season} use_cache={use_cache}")
+    return dict(rates), _copy_league_averages(matchup_rates)
+
+
+def fetch_runtime_overall_league_averages(
+    season: int = SEASON,
+    use_cache: bool = True,
+) -> dict[str, float]:
+    """Fetch overall league averages with runtime fallbacks.
+
+    Uses valid cache -> fresh strict fetch -> stale cache -> hardcoded overall
+    proxy derived from the matchup fallback constants.
+    """
+    cache_key = (season, use_cache)
+    cached = _COMPUTED_LEAGUE_AVERAGE_CACHE.get(cache_key)
+    if cached is not None:
+        return dict(cached)
+
+    hardcoded = _overall_league_avg_rates()
+
+    if use_cache:
+        payload = _load_computed_cache("league_averages", season)
+        if payload is not None and "rates" in payload:
+            rates = dict(payload["rates"])
+            matchup_rates = payload.get("matchup_rates")
+            if isinstance(matchup_rates, dict):
+                _MATCHUP_LEAGUE_AVERAGE_CACHE[cache_key] = _deserialize_matchup_rates(matchup_rates)
+            _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = rates
+            return dict(rates)
+
+    try:
+        rates = fetch_computed_league_averages(season=season, use_cache=False)
+        _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = dict(rates)
+        return dict(rates)
+    except Exception as exc:
+        if use_cache:
+            stale_path = _computed_cache_path("league_averages", season)
+            if stale_path.exists():
+                with open(stale_path) as f:
+                    payload = json.load(f)
+                if "rates" in payload:
+                    rates = dict(payload["rates"])
+                    matchup_rates = payload.get("matchup_rates")
+                    if isinstance(matchup_rates, dict):
+                        _MATCHUP_LEAGUE_AVERAGE_CACHE[cache_key] = _deserialize_matchup_rates(matchup_rates)
+                    logger.warning(
+                        "Overall league averages fetch failed for %d (%s); using cached computed league averages",
+                        season,
+                        exc,
+                    )
+                    _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = rates
+                    return dict(rates)
+
+        logger.warning(
+            "Overall league averages fetch failed for %d (%s); using hardcoded fallback constants",
+            season,
+            exc,
+        )
+        return hardcoded
+
+
 def fetch_runtime_league_averages(
     season: int = SEASON,
     use_cache: bool = True,
@@ -1439,13 +1506,10 @@ def fetch_runtime_league_averages(
             return _copy_league_averages(matchup_rates)
 
     try:
-        fetch_computed_league_averages(season=season, use_cache=False)
-        fresh_key = (season, False)
-        matchup_rates = _MATCHUP_LEAGUE_AVERAGE_CACHE[fresh_key]
-        _MATCHUP_LEAGUE_AVERAGE_CACHE[cache_key] = _copy_league_averages(matchup_rates)
-        if fresh_key in _COMPUTED_LEAGUE_AVERAGE_CACHE:
-            _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = dict(_COMPUTED_LEAGUE_AVERAGE_CACHE[fresh_key])
-        return _copy_league_averages(matchup_rates)
+        fresh_rates, fresh_matchups = _compute_league_averages_and_matchups(season=season, use_cache=False)
+        _MATCHUP_LEAGUE_AVERAGE_CACHE[cache_key] = _copy_league_averages(fresh_matchups)
+        _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = dict(fresh_rates)
+        return _copy_league_averages(fresh_matchups)
     except Exception as exc:
         if use_cache:
             stale_payload = _computed_cache_path("league_averages", season)
