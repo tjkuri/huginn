@@ -122,8 +122,8 @@ Key files in the sibling repo for understanding the data:
 - **True handedness splits are resolved per PA.** `mlb/data/stats.py` fetches vs-LHP/vs-RHP batting splits and vs-LHB/vs-RHB pitching splits from FanGraphs leaderboards using month parameters (13=vs-left, 14=vs-right). In the game engine, batters facing a starter use the handedness split matching the starter's throwing hand; batters facing the aggregate bullpen arm use their overall rates instead of a platoon split. Pitchers always use their handedness-allowed split based on the batter's effective side (switch hitters bat opposite the pitcher). Minimum 30 PA (batter) or 20 BF (pitcher) required to trust a split; otherwise falls back to overall rates.
 - **Name matching is v1 identity resolution.** pybaseball and MLB Stats API players are matched by normalized player name for now; no persistent ID map yet. The canonical normalizer is `normalize_name` in `mlb/utils/normalize.py` — imported everywhere, no local copies. Steps: strip Unicode accents (Agustín → agustin), remove periods from initials (J.C. → JC), drop trailing suffixes (Jr./Sr./II/III/IV).
 - **Name lookup failures log a warning with the normalized form.** When a player lookup falls back to league average, `builder.py` logs: `No stats found for "<raw name>" (normalized: "<key>") — using league average`. This makes it easy to diagnose FanGraphs vs MLB API name mismatches.
-- **Early season uses prior-year coverage.** In April, 2026 batting/pitching thresholds drop to 20 PA / 10 IP. Players still below those thresholds fall back to 2025 season stats before league-average fallback.
-- **Player source tags are explicit.** Data-layer player payloads now carry split-aware `source` values such as `2026_split`, `2026_overall`, `2025_split`, `2025_overall`, or `league_avg`, and the CLI reports batter source counts in data notes.
+- **Player source tags are Marcel-based.** Merged player dicts carry `source` values of `"marcel_3yr"` (all three seasons contributed), `"marcel_2yr"`, `"marcel_1yr"`, or `"league_avg"` (no real data at all). The prior `2026_split` / `2026_overall` / `2025_overall` tags are retired. Raw per-season rows on disk still carry `"{season}_overall"` and `"{season}_split"` tags; only the merged player dict seen downstream uses Marcel tags.
+- **Marcel regression is the projection model for batter and pitcher rates.** For any rate stat, `marcel_blend()` computes: `projected = (w1*r2026 + w2*r2025 + w3*r2024 + w_lg*league_avg) / (w1+w2+w3+w_lg)` where year weights are scaled by sample size: `w1 = 5*(PA_2026/200)`, `w2 = 4*(PA_2025/200)`, `w3 = 3*(PA_2024/200)`. Missing seasons have weight 0. The regression weight per stat is `regression_constant/200` (batters) or `regression_constant/150` (pitchers). Batter per-stat regression constants (Tango's values, in PA equivalents): BB%=200, K%=150, HR%=320, 1B%=200, 2B%=400, 3B%=800, HBP%=400. Pitchers use a single constant of 150 BF for all rate stats (v1). OUT% is derived as `1 − sum(other rates)`. Marcel runs independently on overall, vs-LHP, and vs-RHP row sets; split projections use the matchup-specific `LEAGUE_AVERAGES` entry as the regression target. Overall projections use a simple average of all four matchup entries.
 - **GameContext carries lineup/starter provenance.** `GameContext` includes `away_lineup_source`, `home_lineup_source`, `away_starter_source`, and `home_starter_source` so the formatter can distinguish confirmed lineups from active-roster fallback and probable starters from roster-arm fallback.
 - **Missing real-player data falls back to league average.** Unknown batters/pitchers log warnings and use league-average rates so game-context assembly does not fail.
 - **Park factors are coarse annual inputs.** `mlb/data/park_factors.py` uses hardcoded approximate 2025 factors that should be refreshed annually.
@@ -155,16 +155,22 @@ Only slow pybaseball scrapes are cached. Schedule, lineup, and roster data is al
 
 ```
 baseball_cache/
+  raw_batting-2024.json           ← two-prior season, kept forever (historical data never changes)
+  raw_pitching-2024.json          ← two-prior season, kept forever
   raw_batting-2025.json           ← prior season, kept forever (historical data never changes)
   raw_pitching-2025.json          ← prior season, kept forever
   raw_batting-2026.json           ← current season, re-fetched if older than 6 hours
   raw_pitching-2026.json          ← current season, re-fetched if older than 6 hours
+  raw_batting_vs_lhp-2024.json    ← LHB vs LHP batting splits, two-prior season, kept forever
   raw_batting_vs_lhp-2025.json    ← LHB vs LHP batting splits, prior season, kept forever
   raw_batting_vs_lhp-2026.json    ← LHB vs LHP batting splits, current season, 6-hour TTL
+  raw_batting_vs_rhp-2024.json    ← LHB vs RHP batting splits, two-prior season, kept forever
   raw_batting_vs_rhp-2025.json    ← LHB vs RHP batting splits, prior season, kept forever
   raw_batting_vs_rhp-2026.json    ← LHB vs RHP batting splits, current season, 6-hour TTL
+  raw_pitching_vs_lhb-2024.json   ← pitcher vs LHB splits, two-prior season, kept forever
   raw_pitching_vs_lhb-2025.json   ← pitcher vs LHB splits, prior season, kept forever
   raw_pitching_vs_lhb-2026.json   ← pitcher vs LHB splits, current season, 6-hour TTL
+  raw_pitching_vs_rhb-2024.json   ← pitcher vs RHB splits, two-prior season, kept forever
   raw_pitching_vs_rhb-2025.json   ← pitcher vs RHB splits, prior season, kept forever
   raw_pitching_vs_rhb-2026.json   ← pitcher vs RHB splits, current season, 6-hour TTL
   computed_league_averages-2026.json  ← overall + matchup league averages, same TTL as current-season stats
@@ -173,7 +179,7 @@ baseball_cache/
   pybaseball/                     ← pybaseball's own HTTP/DataFrame cache
 ```
 
-**TTL logic:** `STATS_CACHE_MAX_AGE_HOURS = 6` in `mlb/config.py`. Files for seasons prior to `SEASON` never expire. Current-season raw stat files (batting, pitching, all split variants, and computed league averages) are age-checked; prior seasons are kept forever. Park factor cache files have no TTL — delete to force a fresh Savant fetch.
+**TTL logic:** `STATS_CACHE_MAX_AGE_HOURS = 6` in `mlb/config.py`. Files for seasons prior to `SEASON` never expire. Current-season raw stat files (batting, pitching, all split variants, and computed league averages) are age-checked; prior seasons are kept forever. Park factor cache files have no TTL — delete to force a fresh Savant fetch. Two-prior season (2024) files follow the same never-expire rule as prior-season (2025) files.
 
 **No merged/intermediate cache.** `fetch_batting_splits` and `fetch_pitching_splits` merge current + prior season data on every call (takes milliseconds). Raw overall and split files are cached separately; merging is lazy and fast.
 
