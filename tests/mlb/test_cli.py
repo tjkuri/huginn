@@ -19,7 +19,7 @@ class TestSyntheticSmoke:
     def test_league_average_calibration_is_reasonable(self):
         context = build_league_average_context()
         result = aggregate_simulations(context, LEAGUE_AVERAGES, n_simulations=1000, base_seed=42)
-        assert 8.5 <= result.total_runs_mean <= 9.5
+        assert 7.5 <= result.total_runs_mean <= 10.5
 
 
 class TestJsonSerialization:

@@ -47,17 +47,17 @@ Total: 9.1 runs  (σ 3.2)
 ```
 
 ### Betting Lines
-Model-derived lines with vig-free implied probabilities. Use these to compare against posted odds — a line discrepancy is where the model sees edge.
+Model-derived betting views from the simulation set. Moneyline is shown as no-vig American odds; totals and team totals are shown as model over/under probabilities at common lines.
 
-| Line | Away | Home |
-|------|------|------|
-| Moneyline (American) | -115 | +105 |
-| Run line (±1.5) | +145 | -165 |
-| Total (over/under) | O 8.5 -110 | U 8.5 -110 |
-| Team total (away) | O 4.5 | U 4.5 |
+| Market | Example output |
+|--------|----------------|
+| Moneyline (no-vig American) | NYY -118 / BOS +118 |
+| Total 8.5 | Over 52.1% / Under 47.9% |
+| Team total (away) 4.5 | Over 48.7% / Under 51.3% |
+| Run line (±1.5) | Favorite cover 43.8% / Underdog cover 56.2% |
 
 ### Line Score
-A sample game from the simulation set showing the inning-by-inning breakdown. This is a single representative game, not an average.
+A single randomly selected simulation from the run set showing the inning-by-inning breakdown. This is not an average or median game.
 
 ### Player Projections
 Per-player stats averaged across all simulations, matchup-adjusted for the specific opposing pitcher and park.
@@ -77,7 +77,7 @@ Per-player stats averaged across all simulations, matchup-adjusted for the speci
 - `QS%` — quality start probability (6+ IP, ≤3 ER)
 
 ### Data Quality Notes
-Warns when players are using fallback data (prior-year stats or league averages instead of current-year data).
+Warns when players are using fallback data (prior-year stats or league averages instead of current-year data), and when weather is still using the default placeholder instead of a real feed.
 
 ## Methodology
 
@@ -108,16 +108,16 @@ Each simulation runs a full game:
 ### Aggregation
 
 After N simulations (default 10,000):
-- **Run distributions** — mean, std, percentiles for each team and the total
+- **Run distributions** — mean, std, median, min/max, and discrete frequency distributions for each team and the total
 - **Win probability** — fraction of sims each team won
-- **Betting lines** — American moneyline, run line (±1.5), total, team totals with vig
+- **Betting lines** — no-vig American moneyline plus run-line / total / team-total probabilities
 - **Player stats** — per-game averages and distributions across all sim innings where that player appeared
 
 ### Data Sources
 
 | Source | Used for |
 |--------|----------|
-| `pybaseball` | Season batting/pitching stats (overall and L/R handedness splits) |
+| `pybaseball` | Season batting/pitching leaderboards (overall stats), FanGraphs table parsers, and player-id lookup helpers |
 | `MLB-StatsAPI` | Today's schedule, confirmed lineups, roster |
 | `MLB People API` | Player handedness enrichment (FanGraphs `Bat` column is batting runs, not L/R/S) |
 | FanGraphs legacy API | Direct HTML split fetches for vs-LHP / vs-RHP / vs-LHB / vs-RHB rates |
@@ -125,9 +125,50 @@ After N simulations (default 10,000):
 | `mlb/data/park_factors.py` | Hardcoded 2025 fallback park factors when Savant data is unavailable |
 | `mlb/config.py` `LEAGUE_AVERAGES` | Last-resort fallback only; overwritten at runtime by fetched matchup rates |
 
-**League average fallback chain:** fetched from pybaseball splits → `computed_league_averages-{season}.json` cache → hardcoded constants in `config.py` with a warning.
+**League average fallback chain:** computed from current-season overall pybaseball leaderboards plus FanGraphs handedness split pages → `computed_league_averages-{season}.json` cache → hardcoded constants in `config.py` with a warning.
 
-**Player fallback chain:** current-year stats (≥50 PA / 20 IP) → prior-year stats (≥10 PA / 5 IP) → league average. The data quality panel reports how many players are on each tier.
+**Player fallback chain:** current-year stats (early season: ≥20 PA / 10 IP through April 30; otherwise ≥50 PA / 20 IP) → prior-year stats (≥10 PA / 5 IP) → league average. The data quality panel reports how many players are on each tier.
+
+### Current Data Flow
+
+- `pybaseball` provides overall season batting and pitching rows for each player.
+  - These overall rows are hand-agnostic.
+
+- FanGraphs legacy split pages provide handedness-specific rows.
+  - Batters: `vs LHP`, `vs RHP`
+  - Pitchers: `vs LHB`, `vs RHB`
+
+- Those rows are converted into player profiles.
+  - Batter profile:
+    - overall
+    - vs LHP
+    - vs RHP
+  - Pitcher profile:
+    - overall
+    - vs LHB
+    - vs RHB
+
+- We retain both volume and outcome information.
+  - Batters use `PA`
+  - Pitchers use `BF` / `TBF` when available
+  - If a pitching row does not include `BF` / `TBF`, we estimate batters faced as:
+    - `IP * 3 + H + BB + HBP`
+
+- Using those player-level split rows, we derive league-average matchup baselines for:
+  - `LHB vs RHP`
+  - `RHB vs LHP`
+  - `LHB vs LHP`
+  - `RHB vs RHP`
+
+- Matchup league averages are PA-weighted.
+  - For each player split row, add that split's opportunities to the matchup bucket total.
+  - Add `opportunities * outcome_rate` to each outcome total.
+  - Divide each outcome total by total matchup opportunities.
+
+- If a player does not have a usable handedness split, the model can fall back to:
+  - their overall profile
+  - prior-year data if available and above threshold
+  - league-average matchup rates for that handedness combination
 
 ### Key Design Decisions
 
@@ -137,7 +178,7 @@ After N simulations (default 10,000):
 - **No GIDP in v1.** Ground-ball double plays not modeled; runners hold on generic outs (except sac fly).
 - **Sac fly approximation.** Runner on 3rd scores 50% of the time on a generic out with fewer than 2 outs.
 - **Per-PA handedness splits.** Batters facing the starter use vs-LHP or vs-RHP rates; batters facing the bullpen use overall rates. Pitchers always use their vs-LHB or vs-RHB split based on the batter's effective side.
-- **Runtime league averages.** `build_game_context()` calls `ensure_runtime_league_averages()` once before simulation, which fetches matchup-specific rates (LHB vs RHP, etc.) from pybaseball split data and mutates the global `LEAGUE_AVERAGES` mapping in place. Falls back to cached file → hardcoded constants if the fetch fails.
+- **Runtime league averages.** `build_game_context()` calls `ensure_runtime_league_averages()` once before simulation, which computes matchup-specific rates (LHB vs RHP, etc.) from current-season pybaseball leaderboards plus FanGraphs split pages and mutates the global `LEAGUE_AVERAGES` mapping in place. Falls back to cached file → hardcoded constants if the fetch fails.
 
 ## Simulation Heuristics
 

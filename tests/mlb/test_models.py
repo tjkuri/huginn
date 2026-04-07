@@ -205,8 +205,6 @@ class TestPAResult:
         assert pa.runners_before.first is True
 
 
-# ── PlayerSimStats ───────────────────────────────────────────────────────────
-
 # ── SimulationResult ─────────────────────────────────────────────────────────
 
 class TestSimulationResult:

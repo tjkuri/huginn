@@ -14,12 +14,50 @@ The challenge: we have a batter's stats and a pitcher's stats, but both were mea
 league-average opponents. We can't just average them — that would double-count the baseline.
 The odds ratio removes it.
 
+### How player profiles are built
+
+- `pybaseball` provides overall season batting and pitching leaderboards.
+  - These are per-player rows and are hand-agnostic.
+
+- FanGraphs legacy split pages provide handedness-specific player rows.
+  - Batters: `vs LHP`, `vs RHP`
+  - Pitchers: `vs LHB`, `vs RHB`
+
+- From those sources we build split-aware player profiles.
+  - Batter profile:
+    - overall
+    - vs LHP
+    - vs RHP
+  - Pitcher profile:
+    - overall
+    - vs LHB
+    - vs RHB
+
+- The model keeps both outcome rates and opportunity volume.
+  - Batters use plate appearances (`PA`)
+  - Pitchers use batters faced (`BF` / `TBF`) when available
+  - If a pitching row does not include `BF` / `TBF`, batters faced is estimated as:
+
+```
+BF ≈ (IP × 3) + H + BB + HBP
+```
+
+This is a rough reconstruction:
+- `IP × 3` = outs recorded
+- `H + BB + HBP` = hitters who reached without recording an out
+
+If a player does not have a usable handedness split, the model falls back to:
+1. current-year overall
+2. prior-year data if available and above threshold
+3. league-average matchup rates
+
 ### Step 1 — Pick the right league average
 
 Rates differ meaningfully by handedness matchup. We use four separate baselines, one per
 batter-hand × pitcher-hand combination. These are loaded at runtime: `build_game_context()`
-fetches matchup rates from pybaseball batting split leaderboards (vs-LHP / vs-RHP), computes
-weighted averages across all qualifying players, and writes the result into `LEAGUE_AVERAGES`.
+computes matchup rates from current-season overall batting leaderboards plus FanGraphs
+split leaderboards (vs-LHP / vs-RHP), computes weighted averages across all qualifying
+players, and writes the result into `LEAGUE_AVERAGES`.
 If the live fetch fails, the engine falls back to a cached `computed_league_averages-{season}.json`,
 then to hardcoded 2025 constants in `mlb/config.py`.
 
@@ -33,6 +71,26 @@ Representative 2025 values (actual runtime values may differ slightly):
 | RHB vs RHP | 22.5% | 7.6% | 3.0% | 46.3% |
 
 Switch hitters bat opposite the pitcher (face RHP → bat left, face LHP → bat right).
+
+These matchup league averages are not fetched as finished league tables. They are derived
+from player split rows.
+
+For each handedness bucket:
+
+1. Take all player split rows that belong in that bucket
+2. Weight each player's outcome rates by that split's opportunity volume
+3. Sum those weighted outcomes across players
+4. Divide by total opportunity volume in the bucket
+
+In other words:
+
+```
+league_rate[outcome] =
+    sum(player_split_opportunities × player_split_rate[outcome])
+    / sum(player_split_opportunities)
+```
+
+For batter-derived matchup baselines, the opportunity volume is split `PA`.
 
 ### Step 2 — Odds Ratio
 
@@ -89,8 +147,9 @@ missing for a venue (common early in the season), the hardcoded 2025 table is us
 
 ### Step 4 — Weather adjustments
 
-Temperature and wind shift HR, 2B, and 3B rates. K, BB, HBP, 1B, and OUT are not
-affected — weather only impacts batted ball carry, not outcomes decided before contact.
+Temperature and wind directly shift HR, 2B, and 3B rates. K, BB, HBP, 1B, and OUT are
+not weather-modeled inputs; after that, the full table is clamped to a small positive
+floor and normalized.
 
 **Temperature** (air density effect, baseline 70°F):
 
@@ -278,7 +337,7 @@ while inning ≤ 15:                         15-inning mercy rule cap
 After N simulations (default 10,000):
 
 - **Win probability** — fraction of games each team won
-- **Run distributions** — mean, std, and percentile breakdowns for each team and the total
-- **Betting lines** — derived from run distributions: moneyline, run line (±1.5), total, team totals
+- **Run distributions** — mean, std, median, min/max, and discrete score frequencies for each team and the total
+- **Betting lines** — derived from simulated game scores: no-vig moneyline, run-line cover probabilities, total probabilities, and team-total probabilities
 - **Player stats** — each player's outcomes are tallied across every PA they appeared in across all simulations, then divided by games played to get per-game rates (AVG, OBP, HR%, K%, 2+H%, TB, etc.)
 - **Pitcher props** — innings pitched, Ks, earned runs, 5+K probability, quality start probability

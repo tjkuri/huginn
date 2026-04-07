@@ -74,6 +74,12 @@ def _players_by_source(players: list[Any]) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
     for player in players:
         source = str(getattr(player, "data_source", "unknown") or "unknown")
+        # Normalize year-suffixed sources so "2026_split" and "2026_overall" both
+        # group under "2026", matching what _build_quality_panel looks up.
+        for suffix in ("_overall", "_split"):
+            if source.endswith(suffix):
+                source = source[: -len(suffix)]
+                break
         grouped.setdefault(source, []).append(str(getattr(player, "name", "Unknown")))
     return grouped
 

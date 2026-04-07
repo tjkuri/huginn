@@ -38,10 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Found {len(raw_games)} games.\n")
 
     # Show all keys available in the first game
-    if raw_games:
-        print("ALL keys in game dict (first game):")
-        for key in sorted(raw_games[0].keys()):
-            print(f"  {key!r}: {raw_games[0][key]!r}")
+    print("ALL keys in game dict (first game):")
+    for key in sorted(raw_games[0].keys()):
+        print(f"  {key!r}: {raw_games[0][key]!r}")
 
     print(f"\n{'='*70}")
     print("STEP 2: Probable pitcher fields for each game")
