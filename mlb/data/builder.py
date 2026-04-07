@@ -85,8 +85,6 @@ def _build_batting_order(
                 'No stats found for "%s" (normalized: "%s") — using league average', name, normalized
             )
             stats = _league_average_batter(name, player.get("bats", "R"), opposing_throws)
-        elif stats.get("source") == str(SEASON - 1):
-            logger.info("Using %s batting stats for %s", SEASON - 1, name)
 
         batter = build_batter_stats(
             stats,
@@ -116,8 +114,6 @@ def _build_pitcher(player: dict | None, pitching_data: dict[str, dict]):
             'No stats found for "%s" (normalized: "%s") — using league average', name, normalized
         )
         stats = _league_average_pitcher(name, player.get("throws", "R"))
-    elif stats.get("source") == str(SEASON - 1):
-        logger.info("Using %s pitching stats for %s", SEASON - 1, name)
     else:
         stats = dict(stats, throws=player.get("throws", stats.get("throws", "R")))
 
