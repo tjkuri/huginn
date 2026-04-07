@@ -242,12 +242,166 @@ def _apply_marcel(
     return _normalize_rates(blended), n
 
 
-def _marcel_batter_player(*args, **kwargs) -> dict | None:
-    raise NotImplementedError
+def _marcel_batter_player(
+    s1_overall: dict[str, Any] | None,
+    s2_overall: dict[str, Any] | None,
+    s3_overall: dict[str, Any] | None,
+    s1_vs_lhp: dict[str, Any] | None,
+    s2_vs_lhp: dict[str, Any] | None,
+    s3_vs_lhp: dict[str, Any] | None,
+    s1_vs_rhp: dict[str, Any] | None,
+    s2_vs_rhp: dict[str, Any] | None,
+    s3_vs_rhp: dict[str, Any] | None,
+    bats: Hand,
+) -> dict[str, Any] | None:
+    """Apply Marcel projection to one batter across up to three seasons.
+
+    Returns a merged player dict (same structure as the old merge functions) or None if no data.
+    s1=current season (year_coeff=5), s2=prior (4), s3=two-prior (3).
+    """
+    overall_seasons = [
+        (yc, dict(player.get("rates") or {}), _safe_int(player.get("pa")))
+        for yc, player in ((5, s1_overall), (4, s2_overall), (3, s3_overall))
+        if player and _safe_int(player.get("pa")) > 0
+    ]
+    if not overall_seasons:
+        return None
+
+    league_avg = _overall_league_avg_rates()
+    blended_rates, n_seasons = _apply_marcel(overall_seasons, _BATTER_REGRESSION_CONSTANTS, league_avg, _BATTER_NORMALIZER)
+    source_tag = _marcel_source_tag(n_seasons)
+
+    primary = s1_overall or s2_overall or s3_overall
+    projected_pa = (
+        _safe_int((s1_overall or {}).get("pa"))
+        or _safe_int((s2_overall or {}).get("pa"))
+        or _safe_int((s3_overall or {}).get("pa"))
+    )
+
+    result = dict(primary)
+    result["pa"] = projected_pa
+    result["rates"] = blended_rates
+    result["source"] = source_tag
+    result["overall"] = {
+        "pa": projected_pa,
+        "rates": blended_rates,
+        "source": source_tag,
+        "split_type": "overall",
+    }
+
+    splits: dict[str, dict[str, Any]] = {}
+    for split_key, pitcher_hand, sp1, sp2, sp3 in (
+        ("vs_lhp", Hand.LEFT, s1_vs_lhp, s2_vs_lhp, s3_vs_lhp),
+        ("vs_rhp", Hand.RIGHT, s1_vs_rhp, s2_vs_rhp, s3_vs_rhp),
+    ):
+        split_seasons = [
+            (yc, dict(pl.get("rates") or {}), _safe_int(pl.get("pa")))
+            for yc, pl in ((5, sp1), (4, sp2), (3, sp3))
+            if pl and _safe_int(pl.get("pa")) > 0
+        ]
+        if not split_seasons:
+            continue
+        effective_hand = _effective_batter_hand_for_pitcher(bats, pitcher_hand)
+        matchup_avg = dict(LEAGUE_AVERAGES[(effective_hand, pitcher_hand)])
+        split_rates, split_n = _apply_marcel(split_seasons, _BATTER_REGRESSION_CONSTANTS, matchup_avg, _BATTER_NORMALIZER)
+        split_pa = (
+            _safe_int((sp1 or {}).get("pa"))
+            or _safe_int((sp2 or {}).get("pa"))
+            or _safe_int((sp3 or {}).get("pa"))
+        )
+        splits[split_key] = {
+            "pa": split_pa,
+            "rates": split_rates,
+            "source": _marcel_source_tag(split_n),
+            "split_type": split_key,
+        }
+
+    result["splits"] = splits
+    return result
 
 
-def _marcel_pitcher_player(*args, **kwargs) -> dict | None:
-    raise NotImplementedError
+def _marcel_pitcher_player(
+    s1_overall: dict[str, Any] | None,
+    s2_overall: dict[str, Any] | None,
+    s3_overall: dict[str, Any] | None,
+    s1_vs_lhb: dict[str, Any] | None,
+    s2_vs_lhb: dict[str, Any] | None,
+    s3_vs_lhb: dict[str, Any] | None,
+    s1_vs_rhb: dict[str, Any] | None,
+    s2_vs_rhb: dict[str, Any] | None,
+    s3_vs_rhb: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Apply Marcel projection to one pitcher across up to three seasons.
+
+    Returns a merged player dict or None if no data.
+    s1=current season (year_coeff=5), s2=prior (4), s3=two-prior (3).
+    """
+    overall_seasons = [
+        (yc, dict(player.get("rates") or {}), _safe_int(player.get("pa_against")))
+        for yc, player in ((5, s1_overall), (4, s2_overall), (3, s3_overall))
+        if player and _safe_int(player.get("pa_against")) > 0
+    ]
+    if not overall_seasons:
+        return None
+
+    regression_constants = {stat: _PITCHER_REGRESSION_CONSTANT for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")}
+    league_avg = _overall_league_avg_rates()
+    blended_rates, n_seasons = _apply_marcel(overall_seasons, regression_constants, league_avg, _PITCHER_NORMALIZER)
+    source_tag = _marcel_source_tag(n_seasons)
+
+    primary = s1_overall or s2_overall or s3_overall
+    throws_hand = _hand_from_value(primary.get("throws"))
+    projected_pa = (
+        _safe_int((s1_overall or {}).get("pa_against"))
+        or _safe_int((s2_overall or {}).get("pa_against"))
+        or _safe_int((s3_overall or {}).get("pa_against"))
+    )
+    projected_ip = (
+        _safe_float((s1_overall or {}).get("ip"))
+        or _safe_float((s2_overall or {}).get("ip"))
+        or _safe_float((s3_overall or {}).get("ip"))
+    )
+
+    result = dict(primary)
+    result["pa_against"] = projected_pa
+    result["rates"] = blended_rates
+    result["source"] = source_tag
+    result["avg_pitch_count"] = max(60.0, min(110.0, projected_ip * _AVG_PITCHES_PER_INNING)) if projected_ip > 0 else 85.0
+    result["overall"] = {
+        "pa_against": projected_pa,
+        "rates": blended_rates,
+        "source": source_tag,
+        "split_type": "overall",
+    }
+
+    splits: dict[str, dict[str, Any]] = {}
+    for split_key, batter_hand, sp1, sp2, sp3 in (
+        ("vs_lhb", Hand.LEFT, s1_vs_lhb, s2_vs_lhb, s3_vs_lhb),
+        ("vs_rhb", Hand.RIGHT, s1_vs_rhb, s2_vs_rhb, s3_vs_rhb),
+    ):
+        split_seasons = [
+            (yc, dict(pl.get("rates") or {}), _safe_int(pl.get("pa_against")))
+            for yc, pl in ((5, sp1), (4, sp2), (3, sp3))
+            if pl and _safe_int(pl.get("pa_against")) > 0
+        ]
+        if not split_seasons:
+            continue
+        matchup_avg = dict(LEAGUE_AVERAGES[(batter_hand, throws_hand)])
+        split_rates, split_n = _apply_marcel(split_seasons, regression_constants, matchup_avg, _PITCHER_NORMALIZER)
+        split_pa = (
+            _safe_int((sp1 or {}).get("pa_against"))
+            or _safe_int((sp2 or {}).get("pa_against"))
+            or _safe_int((sp3 or {}).get("pa_against"))
+        )
+        splits[split_key] = {
+            "pa_against": split_pa,
+            "rates": split_rates,
+            "source": _marcel_source_tag(split_n),
+            "split_type": split_key,
+        }
+
+    result["splits"] = splits
+    return result
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

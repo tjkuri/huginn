@@ -326,6 +326,215 @@ class TestMarcelHelpers:
         assert blended["K"] == pytest.approx(lg["K"])
 
 
+def _batter_season_row(pa: int, k_rate: float = 0.22, hr_rate: float = 0.03, season: int = 2026) -> dict:
+    """Build a minimal raw batter season record for Marcel tests."""
+    bb = 0.08
+    hbp = 0.01
+    singles = 0.14
+    doubles = 0.04
+    triples = 0.005
+    out = max(0.0, 1.0 - k_rate - bb - hbp - singles - doubles - triples - hr_rate)
+    return {
+        "player_id": "100",
+        "name": "Test Player",
+        "team": "NYY",
+        "bats": "R",
+        "pa": pa,
+        "rates": {"K": k_rate, "BB": bb, "HBP": hbp, "1B": singles, "2B": doubles, "3B": triples, "HR": hr_rate, "OUT": out},
+        "season": season,
+        "source": f"{season}_overall",
+        "split_type": "overall",
+    }
+
+
+def _pitcher_season_row(pa_against: int, ip: float = 30.0, k_rate: float = 0.25, season: int = 2026) -> dict:
+    """Build a minimal raw pitcher season record for Marcel tests."""
+    bb = 0.08
+    hbp = 0.01
+    singles = 0.14
+    doubles = 0.04
+    triples = 0.003
+    hr = 0.03
+    out = max(0.0, 1.0 - k_rate - bb - hbp - singles - doubles - triples - hr)
+    return {
+        "player_id": "200",
+        "name": "Test Pitcher",
+        "team": "BOS",
+        "throws": "R",
+        "pa_against": pa_against,
+        "ip": ip,
+        "rates": {"K": k_rate, "BB": bb, "HBP": hbp, "1B": singles, "2B": doubles, "3B": triples, "HR": hr, "OUT": out},
+        "avg_pitch_count": 85.0,
+        "season": season,
+        "source": f"{season}_overall",
+        "split_type": "overall",
+    }
+
+
+class TestMarcelBatterPlayer:
+    def test_returns_none_with_no_data(self):
+        from mlb.config import Hand
+        result = _marcel_batter_player(
+            None, None, None,
+            None, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        assert result is None
+
+    def test_single_season_tagged_marcel_1yr(self):
+        from mlb.config import Hand
+        result = _marcel_batter_player(
+            _batter_season_row(200), None, None,
+            None, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        assert result is not None
+        assert result["source"] == "marcel_1yr"
+        assert result["overall"]["source"] == "marcel_1yr"
+
+    def test_two_seasons_tagged_marcel_2yr(self):
+        from mlb.config import Hand
+        result = _marcel_batter_player(
+            _batter_season_row(200, season=2026), _batter_season_row(400, season=2025), None,
+            None, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        assert result["source"] == "marcel_2yr"
+
+    def test_three_seasons_tagged_marcel_3yr(self):
+        from mlb.config import Hand
+        result = _marcel_batter_player(
+            _batter_season_row(200, season=2026),
+            _batter_season_row(400, season=2025),
+            _batter_season_row(500, season=2024),
+            None, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        assert result["source"] == "marcel_3yr"
+
+    def test_sparse_current_season_projects_closer_to_prior(self):
+        """Player with 20 PA in 2026 (K=0.30) and 400 PA in 2025 (K=0.22) should project close to 0.22."""
+        from mlb.config import Hand
+        result = _marcel_batter_player(
+            _batter_season_row(20, k_rate=0.30, season=2026),
+            _batter_season_row(400, k_rate=0.22, season=2025),
+            None,
+            None, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        assert result is not None
+        k = result["rates"]["K"]
+        assert abs(k - 0.22) < abs(k - 0.30), f"Marcel K%={k:.4f} should be closer to 0.22 than 0.30"
+
+    def test_rates_sum_to_one(self):
+        from mlb.config import Hand
+        result = _marcel_batter_player(
+            _batter_season_row(200), None, None,
+            None, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        total = sum(result["rates"].values())
+        assert total == pytest.approx(1.0)
+
+    def test_split_included_when_split_data_present(self):
+        from mlb.config import Hand
+        lhp_row = dict(_batter_season_row(80), split_type="vs_lhp", source="2026_split")
+        lhp_row["pa"] = 80
+        result = _marcel_batter_player(
+            _batter_season_row(200), None, None,
+            lhp_row, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        assert "vs_lhp" in result["splits"]
+        assert result["splits"]["vs_lhp"]["source"] == "marcel_1yr"
+
+    def test_split_omitted_when_no_split_data(self):
+        from mlb.config import Hand
+        result = _marcel_batter_player(
+            _batter_season_row(200), None, None,
+            None, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        assert result["splits"] == {}
+
+    def test_overall_block_has_expected_keys(self):
+        from mlb.config import Hand
+        result = _marcel_batter_player(
+            _batter_season_row(200), None, None,
+            None, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        assert set(result["overall"].keys()) >= {"pa", "rates", "source", "split_type"}
+
+    def test_uses_primary_season_metadata(self):
+        from mlb.config import Hand
+        result = _marcel_batter_player(
+            _batter_season_row(200), None, None,
+            None, None, None,
+            None, None, None,
+            Hand.RIGHT,
+        )
+        assert result["player_id"] == "100"
+        assert result["name"] == "Test Player"
+        assert result["bats"] == "R"
+
+
+class TestMarcelPitcherPlayer:
+    def test_returns_none_with_no_data(self):
+        result = _marcel_pitcher_player(
+            None, None, None,
+            None, None, None,
+            None, None, None,
+        )
+        assert result is None
+
+    def test_single_season_tagged_marcel_1yr(self):
+        result = _marcel_pitcher_player(
+            _pitcher_season_row(150, ip=30.0), None, None,
+            None, None, None,
+            None, None, None,
+        )
+        assert result["source"] == "marcel_1yr"
+
+    def test_two_seasons_tagged_marcel_2yr(self):
+        result = _marcel_pitcher_player(
+            _pitcher_season_row(150, ip=30.0, season=2026),
+            _pitcher_season_row(600, ip=120.0, season=2025),
+            None,
+            None, None, None,
+            None, None, None,
+        )
+        assert result["source"] == "marcel_2yr"
+
+    def test_rates_sum_to_one(self):
+        result = _marcel_pitcher_player(
+            _pitcher_season_row(150, ip=30.0), None, None,
+            None, None, None,
+            None, None, None,
+        )
+        total = sum(result["rates"].values())
+        assert total == pytest.approx(1.0)
+
+    def test_splits_included_when_split_data_present(self):
+        lhb_row = dict(_pitcher_season_row(70, ip=20.0), split_type="vs_lhb")
+        lhb_row["pa_against"] = 70
+        result = _marcel_pitcher_player(
+            _pitcher_season_row(150, ip=30.0), None, None,
+            lhb_row, None, None,
+            None, None, None,
+        )
+        assert "vs_lhb" in result["splits"]
+
+
 class TestFetchBattingSplits:
     def test_fetch_batting_splits_converts_stats(self, monkeypatch):
         class FakeFrame:
