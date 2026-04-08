@@ -46,6 +46,7 @@ class TestJsonSerialization:
         assert isinstance(decoded["betting_lines"], dict)
         assert decoded["metadata"]["seed"] == 3
         assert isinstance(decoded["metadata"]["data_warnings"], list)
+        assert isinstance(decoded["metadata"]["source_statuses"], list)
         assert "inning_scores" not in decoded
 
 

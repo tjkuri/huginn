@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 from mlb.config import Hand, LEAGUE_AVERAGES, SEASON
 from mlb.data.lineups import build_default_lineup_from_roster, fetch_game_lineup, fetch_team_roster
-from mlb.data.models import BatterStats, GameContext, Lineup, ParkFactors
-from mlb.data.park_factors import get_park_factors, get_venue_for_team
+from mlb.data.models import BatterStats, DataSourceStatus, GameContext, Lineup, ParkFactors
+from mlb.data.park_factors import get_park_factors_with_status, get_venue_for_team
 from mlb.data.stats import (
     build_batter_stats,
     build_pitcher_stats,
@@ -26,6 +26,7 @@ class RunPreload:
     """Run-wide data resolved once per CLI invocation."""
     bullpen_by_team: dict[str, dict]
     park_factors_by_venue: dict[str, ParkFactors]
+    park_factor_status_by_venue: dict[str, DataSourceStatus]
 
 
 def preload_run_context(games: list[dict]) -> RunPreload:
@@ -38,11 +39,15 @@ def preload_run_context(games: list[dict]) -> RunPreload:
         for game in games
     }
     park_factors_by_venue: dict[str, ParkFactors] = {}
+    park_factor_status_by_venue: dict[str, DataSourceStatus] = {}
     for venue_name in venues:
-        park_factors_by_venue[str(venue_name)] = get_park_factors(str(venue_name))
+        park_factors, park_status = get_park_factors_with_status(str(venue_name))
+        park_factors_by_venue[str(venue_name)] = park_factors
+        park_factor_status_by_venue[str(venue_name)] = park_status
     return RunPreload(
         bullpen_by_team=dict(bullpen_by_team),
         park_factors_by_venue=park_factors_by_venue,
+        park_factor_status_by_venue=park_factor_status_by_venue,
     )
 
 
@@ -61,6 +66,16 @@ def _league_average_batter(name: str, bats: str, pitcher_throws: str | None = No
         "rates": dict(LEAGUE_AVERAGES[(effective_hand, opposing_hand)]),
         "source": "league_avg",
     }
+
+
+def _status_entry(source_name: str, *, role: str, scope: str, status: str, detail: str) -> DataSourceStatus:
+    return DataSourceStatus(
+        source_name=source_name,
+        role=role,
+        scope=scope,
+        status=status,
+        detail=detail,
+    )
 
 
 def _league_average_pitcher(name: str, throws: str, batter_hand: str | None = None) -> dict:
@@ -149,19 +164,33 @@ def _build_pitcher(player: dict | None, pitching_data: dict[str, dict]):
     return pitcher
 
 
-def _build_bullpen(team_name: str, bullpen_by_team: dict[str, dict]) -> list:
+def _build_bullpen(team_name: str, bullpen_by_team: dict[str, dict], source_name: str) -> tuple[list, DataSourceStatus]:
     team_code = fangraphs_team_code(team_name)
     bullpen_data = bullpen_by_team.get(team_code)
     if bullpen_data is None:
         logger.warning("Missing bullpen data for %s; using league-average fallback", team_name)
         bullpen_data = _league_average_pitcher(f"{team_name} Bullpen", "R")
+        status = _status_entry(
+            source_name,
+            role="optional_enrichment",
+            scope="run_wide",
+            status="degraded",
+            detail=f"{team_name} bullpen fell back to league-average rates",
+        )
     else:
         bullpen_data = dict(bullpen_data, name=f"{team_name} Bullpen")
+        status = _status_entry(
+            source_name,
+            role="optional_enrichment",
+            scope="run_wide",
+            status="fresh",
+            detail=f"{team_name} bullpen loaded from preloaded team bullpen data",
+        )
 
     bullpen = build_pitcher_stats(bullpen_data)
     bullpen.player_id = str(bullpen_data.get("player_id") or f"{_normalize_name(team_name)}-bullpen")
     bullpen.name = f"{team_name} Bullpen"
-    return [bullpen]
+    return [bullpen], status
 
 
 def _resolve_lineup(game_info: dict) -> dict:
@@ -263,8 +292,22 @@ def build_game_context(
     lineup_info = _resolve_lineup(game_info)
     venue_name = game_info.get("venue") or get_venue_for_team(game_info.get("home_team", "")) or "Unknown Venue"
     park_factors = preload.park_factors_by_venue.get(str(venue_name))
+    park_factor_status = preload.park_factor_status_by_venue.get(str(venue_name))
     if park_factors is None:
         raise KeyError(f"Missing preloaded park factors for venue {venue_name!r}")
+    if park_factor_status is None:
+        raise KeyError(f"Missing preloaded park factor status for venue {venue_name!r}")
+
+    away_bullpen, away_bullpen_status = _build_bullpen(
+        str(game_info.get("away_team") or "Away Team"),
+        preload.bullpen_by_team,
+        "away_bullpen",
+    )
+    home_bullpen, home_bullpen_status = _build_bullpen(
+        str(game_info.get("home_team") or "Home Team"),
+        preload.bullpen_by_team,
+        "home_bullpen",
+    )
 
     away_lineup = Lineup(
         team_id=str(game_info.get("away_team_id") or ""),
@@ -275,7 +318,7 @@ def build_game_context(
             lineup_info.get("home_pitcher"),
         ),
         starting_pitcher=_build_pitcher(lineup_info.get("away_pitcher"), pitching_data),
-        bullpen=_build_bullpen(str(game_info.get("away_team") or "Away Team"), preload.bullpen_by_team),
+        bullpen=away_bullpen,
     )
     home_lineup = Lineup(
         team_id=str(game_info.get("home_team_id") or ""),
@@ -286,8 +329,49 @@ def build_game_context(
             lineup_info.get("away_pitcher"),
         ),
         starting_pitcher=_build_pitcher(lineup_info.get("home_pitcher"), pitching_data),
-        bullpen=_build_bullpen(str(game_info.get("home_team") or "Home Team"), preload.bullpen_by_team),
+        bullpen=home_bullpen,
     )
+
+    source_statuses = [
+        _status_entry(
+            "away_lineup",
+            role="optional_enrichment",
+            scope="game_specific",
+            status="degraded" if lineup_info.get("away_lineup_source") == "fallback_roster_order" else "fresh",
+            detail="Away lineup used roster fallback" if lineup_info.get("away_lineup_source") == "fallback_roster_order" else "Away lineup confirmed from boxscore",
+        ),
+        _status_entry(
+            "home_lineup",
+            role="optional_enrichment",
+            scope="game_specific",
+            status="degraded" if lineup_info.get("home_lineup_source") == "fallback_roster_order" else "fresh",
+            detail="Home lineup used roster fallback" if lineup_info.get("home_lineup_source") == "fallback_roster_order" else "Home lineup confirmed from boxscore",
+        ),
+        _status_entry(
+            "away_starter",
+            role="required",
+            scope="game_specific",
+            status="degraded" if lineup_info.get("away_starter_source") in {"boxscore", "first_roster_arm"} else "fresh",
+            detail=f"Away starter source: {lineup_info.get('away_starter_source') or 'boxscore'}",
+        ),
+        _status_entry(
+            "home_starter",
+            role="required",
+            scope="game_specific",
+            status="degraded" if lineup_info.get("home_starter_source") in {"boxscore", "first_roster_arm"} else "fresh",
+            detail=f"Home starter source: {lineup_info.get('home_starter_source') or 'boxscore'}",
+        ),
+        away_bullpen_status,
+        home_bullpen_status,
+        park_factor_status,
+        _status_entry(
+            "weather",
+            role="placeholder",
+            scope="game_specific",
+            status="placeholder",
+            detail="Using default placeholder weather until a real weather feed is integrated",
+        ),
+    ]
 
     return GameContext(
         game_id=str(game_info.get("game_id") or ""),
@@ -300,4 +384,5 @@ def build_game_context(
         home_lineup_source=str(lineup_info.get("home_lineup_source") or "confirmed"),
         away_starter_source=str(lineup_info.get("away_starter_source") or "boxscore"),
         home_starter_source=str(lineup_info.get("home_starter_source") or "boxscore"),
+        source_statuses=source_statuses,
     )

@@ -115,6 +115,16 @@ class Weather:
     is_indoor: bool = False  # True for domes or closed retractable roofs
 
 
+@dataclass(frozen=True)
+class DataSourceStatus:
+    """Structured source-state entry for runtime data quality reporting."""
+    source_name: str
+    role: str
+    scope: str
+    status: str
+    detail: str = ""
+
+
 # ── Lineup & game context ────────────────────────────────────────────────────
 
 @dataclass
@@ -140,6 +150,7 @@ class GameContext:
     home_lineup_source: str = "confirmed"
     away_starter_source: str = "boxscore"
     home_starter_source: str = "boxscore"
+    source_statuses: list[DataSourceStatus] = field(default_factory=list)
 
 
 # ── Simulation state ─────────────────────────────────────────────────────────

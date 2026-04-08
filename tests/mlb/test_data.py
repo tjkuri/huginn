@@ -5,10 +5,11 @@ import pytest
 
 from mlb.config import Hand
 from mlb.data.builder import RunPreload, build_game_context, preload_run_context
-from mlb.data.models import GameContext, ParkFactors
+from mlb.data.models import DataSourceStatus, GameContext, ParkFactors
 from mlb.data.park_factors import (
     _convert_savant_index_to_multiplier,
     get_park_factors,
+    get_park_factors_with_status,
     get_venue_for_team,
 )
 from mlb.data.stats import (
@@ -102,10 +103,12 @@ def _preload_fixture(
     *,
     bullpen_by_team: dict[str, dict] | None = None,
     park_factors_by_venue: dict[str, ParkFactors] | None = None,
+    park_factor_status_by_venue: dict[str, DataSourceStatus] | None = None,
 ) -> RunPreload:
     return RunPreload(
         bullpen_by_team=bullpen_by_team or {},
         park_factors_by_venue=park_factors_by_venue or {},
+        park_factor_status_by_venue=park_factor_status_by_venue or {},
     )
 
 
@@ -172,23 +175,41 @@ class TestBuildPitcherStats:
 class TestParkFactors:
     def test_known_park(self, monkeypatch):
         monkeypatch.setattr(
-            "mlb.data.park_factors.fetch_park_factors",
-            lambda season: {
+            "mlb.data.park_factors.fetch_park_factors_with_source",
+            lambda season: ("fresh", {
                 "Coors Field": {
                     "factors_vs_lhb": {"HR": 1.25, "2B": 1.20, "3B": 1.40, "1B": 1.10, "BB": 1.00, "K": 0.95},
                     "factors_vs_rhb": {"HR": 1.30, "2B": 1.18, "3B": 1.35, "1B": 1.08, "BB": 1.00, "K": 0.94},
                 }
-            },
+            }),
         )
         park = get_park_factors("Coors Field")
         assert park.factors_vs_lhb["HR"] > 1.0
         assert park.factors_vs_rhb["HR"] > 1.0
 
     def test_unknown_park(self, monkeypatch):
-        monkeypatch.setattr("mlb.data.park_factors.fetch_park_factors", lambda season: {})
+        monkeypatch.setattr("mlb.data.park_factors.fetch_park_factors_with_source", lambda season: ("fresh", {}))
         park = get_park_factors("Unknown Field")
         assert all(value == 1.0 for value in park.factors_vs_lhb.values())
         assert all(value == 1.0 for value in park.factors_vs_rhb.values())
+
+    def test_park_factor_status_uses_hardcoded_fallback_for_missing_venue(self, monkeypatch):
+        monkeypatch.setattr(
+            "mlb.data.park_factors.fetch_park_factors_with_source",
+            lambda season: ("fresh", {}),
+        )
+        park, status = get_park_factors_with_status("Yankee Stadium")
+        assert park.venue_name == "Yankee Stadium"
+        assert status.status == "hardcoded_fallback"
+
+    def test_park_factor_status_uses_neutral_degraded_for_unknown_venue(self, monkeypatch):
+        monkeypatch.setattr(
+            "mlb.data.park_factors.fetch_park_factors_with_source",
+            lambda season: ("fresh", {}),
+        )
+        park, status = get_park_factors_with_status("Unknown Field")
+        assert park.venue_name == "Unknown Field"
+        assert status.status == "degraded"
 
     def test_team_to_venue_lookup(self):
         assert get_venue_for_team("Houston Astros") == "Daikin Park"
@@ -982,7 +1003,24 @@ class TestBuildGameContext:
 
         monkeypatch.setattr("mlb.data.builder.ensure_runtime_league_averages", lambda season=2026: calls.__setitem__("league", calls["league"] + 1))
         monkeypatch.setattr("mlb.data.builder.fetch_team_bullpen_stats", lambda season=2026: calls.__setitem__("bullpen", calls["bullpen"] + 1) or {})
-        monkeypatch.setattr("mlb.data.builder.get_park_factors", lambda venue_name: calls["parks"].append(venue_name) or None)
+        monkeypatch.setattr(
+            "mlb.data.builder.get_park_factors_with_status",
+            lambda venue_name: (
+                calls["parks"].append(venue_name) or ParkFactors(
+                    venue_id=venue_name,
+                    venue_name=venue_name,
+                    factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                    factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                ),
+                DataSourceStatus(
+                    source_name="park_factors",
+                    role="optional_enrichment",
+                    scope="run_wide",
+                    status="fresh",
+                    detail=f"{venue_name} test park factors",
+                ),
+            ),
+        )
 
         preload_run_context(
             [
@@ -1074,6 +1112,15 @@ class TestBuildGameContext:
                     factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
                 )
             },
+            park_factor_status_by_venue={
+                "Daikin Park": DataSourceStatus(
+                    source_name="park_factors",
+                    role="optional_enrichment",
+                    scope="run_wide",
+                    status="cache",
+                    detail="park factors loaded from cache",
+                )
+            },
         )
 
         context = build_game_context(game_info, batting_data, pitching_data, preload)
@@ -1093,6 +1140,16 @@ class TestBuildGameContext:
         assert context.home_lineup_source == "confirmed"
         assert context.away_starter_source == "boxscore"
         assert context.home_starter_source == "boxscore"
+        status_names = {status.source_name for status in context.source_statuses}
+        assert {"away_lineup", "home_lineup", "away_starter", "home_starter", "away_bullpen", "home_bullpen", "park_factors", "weather"} <= status_names
+        weather_status = next(status for status in context.source_statuses if status.source_name == "weather")
+        assert weather_status.status == "placeholder"
+        park_status = next(status for status in context.source_statuses if status.source_name == "park_factors")
+        assert park_status.status == "cache"
+        away_starter_status = next(status for status in context.source_statuses if status.source_name == "away_starter")
+        home_starter_status = next(status for status in context.source_statuses if status.source_name == "home_starter")
+        assert away_starter_status.status == "degraded"
+        assert home_starter_status.status == "degraded"
 
     def test_missing_preloaded_park_factors_raise_error(self, monkeypatch):
         game_info = {
@@ -1142,6 +1199,7 @@ class TestBuildGameContext:
                 _preload_fixture(
                     bullpen_by_team={},
                     park_factors_by_venue={},
+                    park_factor_status_by_venue={},
                 ),
             )
 
@@ -1197,6 +1255,15 @@ class TestBuildGameContext:
                     factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
                 )
             },
+            park_factor_status_by_venue={
+                "Wrigley Field": DataSourceStatus(
+                    source_name="park_factors",
+                    role="optional_enrichment",
+                    scope="run_wide",
+                    status="hardcoded_fallback",
+                    detail="park factors fell back to hardcoded table",
+                )
+            },
         )
 
         with caplog.at_level(logging.WARNING):
@@ -1207,6 +1274,8 @@ class TestBuildGameContext:
         assert sum(context.away_lineup.batting_order[-1].rates.values()) == pytest.approx(1.0)
         assert any("Away Batter 9" in record.message and "league average" in record.message for record in caplog.records)
         assert context.away_lineup.bullpen[0].name == "Away Team Bullpen"
+        away_bullpen_status = next(status for status in context.source_statuses if status.source_name == "away_bullpen")
+        assert away_bullpen_status.status == "degraded"
 
     def test_roster_fallback_tags_lineup_and_starter_sources(self, monkeypatch):
         game_info = {
@@ -1244,6 +1313,15 @@ class TestBuildGameContext:
                     factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
                 )
             },
+            park_factor_status_by_venue={
+                "Wrigley Field": DataSourceStatus(
+                    source_name="park_factors",
+                    role="optional_enrichment",
+                    scope="run_wide",
+                    status="fresh",
+                    detail="park factors from savant",
+                )
+            },
         )
 
         context = build_game_context(game_info, batting_data, pitching_data, preload)
@@ -1252,6 +1330,14 @@ class TestBuildGameContext:
         assert context.home_lineup_source == "fallback_roster_order"
         assert context.away_starter_source == "first_roster_arm"
         assert context.home_starter_source == "probable"
+        away_lineup_status = next(status for status in context.source_statuses if status.source_name == "away_lineup")
+        home_lineup_status = next(status for status in context.source_statuses if status.source_name == "home_lineup")
+        away_starter_status = next(status for status in context.source_statuses if status.source_name == "away_starter")
+        home_starter_status = next(status for status in context.source_statuses if status.source_name == "home_starter")
+        assert away_lineup_status.status == "degraded"
+        assert home_lineup_status.status == "degraded"
+        assert away_starter_status.status == "degraded"
+        assert home_starter_status.status == "fresh"
 
 
 class TestNormalizeName:

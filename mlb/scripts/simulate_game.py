@@ -122,6 +122,7 @@ def serialize_simulation_result(
         "seed": seed,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data_warnings": list(data_warnings),
+        "source_statuses": _serialize_value(game_context.source_statuses),
     }
     return payload
 

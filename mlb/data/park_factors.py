@@ -11,7 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from mlb.config import CACHE_DIR, SEASON
-from mlb.data.models import ParkFactors
+from mlb.data.models import DataSourceStatus, ParkFactors
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ _VENUE_ALIASES = {
 _SAVANT_URL = "https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year={season}"
 _SAVANT_URL_SIDE = "https://baseballsavant.mlb.com/leaderboard/statcast-park-factors?type=year&year={season}&batSide={bat_side}"
 _SAVANT_DATA_RE = re.compile(r"var data = (\[.*?\]);", re.DOTALL)
-_PARK_FACTOR_CACHE: dict[int, dict[str, dict[str, dict[str, float]]]] = {}
+_PARK_FACTOR_CACHE: dict[int, tuple[str, dict[str, dict[str, dict[str, float]]]]] = {}
 
 
 def _park_factor_cache_path(season: int) -> Path:
@@ -184,7 +184,7 @@ def _fetch_savant_combined(season: int) -> dict[str, dict[str, float]]:
     return _rows_to_venue_factors(all_rows)
 
 
-def fetch_park_factors(season: int) -> dict[str, dict[str, dict[str, float]]]:
+def fetch_park_factors_with_source(season: int) -> tuple[str, dict[str, dict[str, dict[str, float]]]]:
     """Fetch season park factors from Baseball Savant with handedness splits.
 
     Makes separate requests for LHB (batSide=L) and RHB (batSide=R). If one
@@ -205,10 +205,12 @@ def fetch_park_factors(season: int) -> dict[str, dict[str, dict[str, float]]]:
             source = str(cached_payload.get("source") or "cache")
             if source == "savant":
                 logger.info("Park factors: loaded from cache (Baseball Savant %s)", season)
+                cache_source = "cache"
             else:
                 logger.info("Park factors: loaded from cache (hardcoded fallback)")
-            _PARK_FACTOR_CACHE[season] = factors
-            return factors
+                cache_source = "hardcoded_fallback"
+            _PARK_FACTOR_CACHE[season] = (cache_source, factors)
+            return cache_source, factors
 
     try:
         # Attempt handedness-split requests.
@@ -252,19 +254,34 @@ def fetch_park_factors(season: int) -> dict[str, dict[str, dict[str, float]]]:
         with open(cache_path, "w") as f:
             json.dump({"season": season, "source": "savant", "factors": factors}, f, indent=2)
         logger.info("Park factors: fetched from Baseball Savant (%s) with LHB/RHB splits", season)
-        _PARK_FACTOR_CACHE[season] = factors
-        return factors
+        _PARK_FACTOR_CACHE[season] = ("fresh", factors)
+        return "fresh", factors
     except Exception:
         logger.info("Park factors: all Savant requests failed; using hardcoded fallback")
         fallback = _fallback_park_factors()
-        _PARK_FACTOR_CACHE[season] = fallback
-        return fallback
+        _PARK_FACTOR_CACHE[season] = ("hardcoded_fallback", fallback)
+        return "hardcoded_fallback", fallback
+
+
+def fetch_park_factors(season: int) -> dict[str, dict[str, dict[str, float]]]:
+    """Fetch season park factors and return only the factor mapping."""
+    _, factors = fetch_park_factors_with_source(season)
+    return factors
 
 
 def get_park_factors(venue_name: str) -> ParkFactors:
     """Return park-factor multipliers for the given venue."""
+    park_factors, _ = get_park_factors_with_status(venue_name)
+    return park_factors
+
+
+def get_park_factors_with_status(venue_name: str) -> tuple[ParkFactors, DataSourceStatus]:
+    """Return park factors plus provenance for one venue."""
     venue_name = _VENUE_ALIASES.get(venue_name, venue_name)
-    factors = fetch_park_factors(SEASON).get(venue_name)
+    source, all_factors = fetch_park_factors_with_source(SEASON)
+    factors = all_factors.get(venue_name)
+    status = source
+    detail = f"Park factors resolved for {venue_name} from preloaded season park factors"
     if factors is None:
         # Savant data may be incomplete early in the season — fall back to hardcoded table.
         hardcoded = PARK_FACTORS.get(venue_name)
@@ -274,18 +291,28 @@ def get_park_factors(venue_name: str) -> ParkFactors:
                 "factors_vs_lhb": dict(hardcoded["factors_vs_lhb"]),
                 "factors_vs_rhb": dict(hardcoded["factors_vs_rhb"]),
             }
+            status = "hardcoded_fallback"
+            detail = f"Park factors for {venue_name} fell back to the hardcoded venue table"
         else:
             logger.warning("Park factors: unknown venue %r; using neutral factors", venue_name)
             factors = {
                 "factors_vs_lhb": dict(_NEUTRAL_FACTORS),
                 "factors_vs_rhb": dict(_NEUTRAL_FACTORS),
             }
+            status = "degraded"
+            detail = f"Park factors for {venue_name} used neutral multipliers"
 
     return ParkFactors(
         venue_id=venue_name or "unknown",
         venue_name=venue_name or "Unknown Venue",
         factors_vs_lhb=dict(factors["factors_vs_lhb"]),
         factors_vs_rhb=dict(factors["factors_vs_rhb"]),
+    ), DataSourceStatus(
+        source_name="park_factors",
+        role="optional_enrichment",
+        scope="run_wide",
+        status=status,
+        detail=detail,
     )
 
 
