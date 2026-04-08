@@ -149,12 +149,17 @@ player's overall projected profile.
 ### Step 1 — Pick the right league average
 
 Rates differ meaningfully by handedness matchup. We use four separate baselines, one per
-batter-hand × pitcher-hand combination. These are loaded at runtime: `build_game_context()`
-computes matchup rates from current-season overall batting leaderboards plus FanGraphs
-split leaderboards (vs-LHP / vs-RHP), computes weighted averages across all qualifying
-players, and writes the result into `LEAGUE_AVERAGES`.
-If the live fetch fails, the engine falls back to a cached `computed_league_averages-{season}.json`,
-then to hardcoded 2025 constants in `mlb/config.py`.
+batter-hand × pitcher-hand combination. These are resolved as run-wide runtime data before
+game simulation begins. The CLI preloads shared season data once per invocation, and the
+runtime league-average loader prefers:
+
+1. valid computed cache
+2. fresh recomputation from current-season leaderboard plus split data
+3. stale computed cache
+4. hardcoded fallback constants in `mlb/config.py`
+
+The resolved matchup rates are written into `LEAGUE_AVERAGES` and then reused for each
+selected game in that CLI run.
 
 Representative 2025 values (actual runtime values may differ slightly):
 
@@ -168,7 +173,7 @@ Representative 2025 values (actual runtime values may differ slightly):
 Switch hitters bat opposite the pitcher (face RHP → bat left, face LHP → bat right).
 
 These matchup league averages are not fetched as finished league tables. They are derived
-from player split rows.
+from player split rows when fresh recomputation succeeds.
 
 For each handedness bucket:
 
@@ -436,3 +441,25 @@ After N simulations (default 10,000):
 - **Betting lines** — derived from simulated game scores: no-vig moneyline, run-line cover probabilities, total probabilities, and team-total probabilities
 - **Player stats** — each player's outcomes are tallied across every PA they appeared in across all simulations, then divided by games played to get per-game rates (AVG, OBP, HR%, K%, 2+H%, TB, etc.)
 - **Pitcher props** — innings pitched, Ks, earned runs, 5+K probability, quality start probability
+
+---
+
+## CLI Output and Data Quality
+
+### Runtime data quality reporting
+
+The CLI reports data quality in two layers:
+
+- **Run-wide data quality** — printed once before game results
+  - shared batting and pitching season availability across the Marcel window
+  - shared handedness split availability across the Marcel window
+  - whether each shared input came from a fresh fetch, a valid cache hit, or degraded
+    because that season/split could not be used
+
+- **Per-game data quality** — printed with each game's result
+  - lineup confirmation vs roster fallback
+  - starter provenance (`probable`, `boxscore`, or `first_roster_arm`)
+  - bullpen fallback status
+  - park-factor provenance
+  - placeholder weather
+  - player-level fallback notes for the actual matchup

@@ -19,6 +19,7 @@ python -m mlb.scripts.simulate_game --game-id 748123
 python -m mlb.scripts.simulate_game --sims 10000 --seed 42
 
 # JSON output (for Yggdrasil; stdout is clean, logs go to stderr)
+# Output shape: {"games": [...], "global_source_statuses": [...]}
 python -m mlb.scripts.simulate_game --json
 
 # Show progress during long runs
@@ -184,7 +185,7 @@ After N simulations (default 10,000):
 - **No GIDP in v1.** Ground-ball double plays not modeled; runners hold on generic outs (except sac fly).
 - **Sac fly approximation.** Runner on 3rd scores 50% of the time on a generic out with fewer than 2 outs.
 - **Per-PA handedness splits.** Batters facing the starter use vs-LHP or vs-RHP rates; batters facing the bullpen use overall rates. Pitchers always use their vs-LHB or vs-RHB split based on the batter's effective side.
-- **Runtime league averages.** `build_game_context()` calls `ensure_runtime_league_averages()` once before simulation, which computes matchup-specific rates (LHB vs RHP, etc.) from current-season pybaseball leaderboards plus FanGraphs split pages and mutates the global `LEAGUE_AVERAGES` mapping in place. Falls back to cached file → hardcoded constants if the fetch fails.
+- **Runtime league averages preloaded once per run.** `preload_run_context()` resolves matchup-specific rates (LHB vs RHP, etc.) before any game context is assembled, and injects them into the global `LEAGUE_AVERAGES` mapping. Falls back through: valid computed cache → fresh recomputation → stale computed cache → hardcoded constants.
 
 ## Simulation Heuristics
 
@@ -255,5 +256,5 @@ mlb/
     format_output.py     Rich terminal formatter (box score, player tables, data notes)
     test_smoke.py        Synthetic end-to-end smoke test (no network required)
     diagnose_calibration.py  League-average neutral game calibration check
-tests/mlb/               pytest suite (204 tests)
+tests/mlb/               pytest suite
 ```
