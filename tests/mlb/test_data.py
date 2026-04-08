@@ -658,6 +658,47 @@ class TestFetchBattingSplits:
         assert scrape_count["n"] == 1
         assert "cached batter" in result
 
+    def test_overall_fetch_failure_degrades_to_prior_season(self, monkeypatch):
+        class FakeFrame:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def to_dict(self, orient="records"):
+                return self.rows
+
+        rows_2025 = [
+            {"Name": "Fallback Batter", "PA": 120, "K%": 0.21, "BB%": 0.09, "HBP": 2, "H": 30, "2B": 5, "3B": 1, "HR": 4, "IDfg": 1, "Team": "ABC", "Bat": "R"},
+        ]
+
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
+
+        def fake_batting_stats(season, **kwargs):
+            if season == 2026:
+                raise RuntimeError("2026 blocked")
+            if season == 2025:
+                return FakeFrame(rows_2025)
+            raise RuntimeError("2024 blocked")
+
+        monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (fake_batting_stats, None))
+
+        data = fetch_batting_splits(season=2026, use_cache=False)
+
+        assert data["fallback batter"]["source"] == "marcel_1yr"
+
+    def test_raises_when_no_usable_overall_batting_stats_exist(self, monkeypatch):
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr(
+            "mlb.data.stats._import_pybaseball",
+            lambda: (lambda season, **kwargs: (_ for _ in ()).throw(RuntimeError(f"{season} blocked")), None),
+        )
+
+        with pytest.raises(RuntimeError, match="No usable batting overall stats"):
+            fetch_batting_splits(season=2026, use_cache=False)
+
 
 class TestFetchPitchingSplits:
     def test_source_tagging_and_2025_fallback(self, monkeypatch):
@@ -716,6 +757,47 @@ class TestFetchPitchingSplits:
 
         data = fetch_pitching_splits(season=2026, use_cache=False)
         assert data["sample pitcher"]["splits"] == {}
+
+    def test_overall_fetch_failure_degrades_to_prior_season(self, monkeypatch):
+        class FakeFrame:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def to_dict(self, orient="records"):
+                return self.rows
+
+        rows_2025 = [
+            {"Name": "Fallback Pitcher", "IP": 90.0, "H": 70, "2B": 12, "3B": 1, "HR": 10, "BB": 25, "HBP": 2, "SO": 95, "IDfg": 2, "Team": "ABC", "Throws": "L"},
+        ]
+
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
+
+        def fake_pitching_stats(season, **kwargs):
+            if season == 2026:
+                raise RuntimeError("2026 blocked")
+            if season == 2025:
+                return FakeFrame(rows_2025)
+            raise RuntimeError("2024 blocked")
+
+        monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (None, fake_pitching_stats))
+
+        data = fetch_pitching_splits(season=2026, use_cache=False)
+
+        assert data["fallback pitcher"]["source"] == "marcel_1yr"
+
+    def test_raises_when_no_usable_overall_pitching_stats_exist(self, monkeypatch):
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr(
+            "mlb.data.stats._import_pybaseball",
+            lambda: (None, lambda season, **kwargs: (_ for _ in ()).throw(RuntimeError(f"{season} blocked"))),
+        )
+
+        with pytest.raises(RuntimeError, match="No usable pitching overall stats"):
+            fetch_pitching_splits(season=2026, use_cache=False)
 
 
 class TestRuntimeLeagueAverages:

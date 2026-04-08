@@ -1184,12 +1184,44 @@ def _fetch_pitching_split_raw(
     return players
 
 
+def _load_overall_seasons(
+    season: int,
+    fetch_season_raw,
+    use_cache: bool,
+    *,
+    label: str,
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
+    """Fetch overall seasons independently so one failure does not abort Marcel."""
+    results: dict[int, dict[str, dict]] = {}
+    seasons = (season, season - 1, season - 2)
+    for target_season in seasons:
+        try:
+            results[target_season] = fetch_season_raw(target_season, use_cache)
+        except Exception as exc:
+            logger.warning(
+                "%s overall fetch failed for %d (%s); season excluded from Marcel",
+                label,
+                target_season,
+                exc,
+            )
+            results[target_season] = {}
+
+    if not any(results[target_season] for target_season in seasons):
+        joined = ", ".join(str(target_season) for target_season in seasons)
+        raise RuntimeError(f"No usable {label.lower()} overall stats were available for seasons {joined}")
+
+    return results[season], results[season - 1], results[season - 2]
+
+
 def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
     """Fetch batting stats for three seasons and merge via Marcel projection."""
     batting_stats, _ = _import_pybaseball()
-    s1_players = _fetch_batting_season_raw(season, batting_stats, use_cache)
-    s2_players = _fetch_batting_season_raw(season - 1, batting_stats, use_cache)
-    s3_players = _fetch_batting_season_raw(season - 2, batting_stats, use_cache)
+    s1_players, s2_players, s3_players = _load_overall_seasons(
+        season,
+        lambda target_season, cache_enabled: _fetch_batting_season_raw(target_season, batting_stats, cache_enabled),
+        use_cache,
+        label="Batting",
+    )
 
     # Runtime helper already degrades through cache and hardcoded fallback.
     overall_lg = fetch_runtime_overall_league_averages(season=season, use_cache=use_cache)
@@ -1243,9 +1275,12 @@ def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[s
 def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
     """Fetch pitching stats for three seasons and merge via Marcel projection."""
     _, pitching_stats = _import_pybaseball()
-    s1_players = _fetch_pitching_season_raw(season, pitching_stats, use_cache)
-    s2_players = _fetch_pitching_season_raw(season - 1, pitching_stats, use_cache)
-    s3_players = _fetch_pitching_season_raw(season - 2, pitching_stats, use_cache)
+    s1_players, s2_players, s3_players = _load_overall_seasons(
+        season,
+        lambda target_season, cache_enabled: _fetch_pitching_season_raw(target_season, pitching_stats, cache_enabled),
+        use_cache,
+        label="Pitching",
+    )
 
     # Runtime helper already degrades through cache and hardcoded fallback.
     overall_lg = fetch_runtime_overall_league_averages(season=season, use_cache=use_cache)
