@@ -24,8 +24,10 @@ from mlb.data.stats import (
     build_pitcher_stats,
     compute_league_averages,
     fetch_batting_splits,
+    fetch_batting_splits_with_statuses,
     fetch_runtime_overall_league_averages,
     fetch_pitching_splits,
+    fetch_pitching_splits_with_statuses,
     marcel_blend,
 )
 from mlb.data.lineups import fetch_todays_games
@@ -592,7 +594,7 @@ class TestFetchBattingSplits:
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (lambda season, **kwargs: FakeFrame(), None))
-        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw_with_status", lambda *args, **kwargs: ({}, "fresh"))
 
         data = fetch_batting_splits(use_cache=False)
         player = data["sample batter"]
@@ -626,7 +628,7 @@ class TestFetchBattingSplits:
 
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw_with_status", lambda *args, **kwargs: ({}, "fresh"))
 
         def fake_batting_stats(season, **kwargs):
             assert "month" not in kwargs
@@ -693,7 +695,7 @@ class TestFetchBattingSplits:
 
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw_with_status", lambda *args, **kwargs: ({}, "fresh"))
 
         def fake_batting_stats(season, **kwargs):
             if season == 2026:
@@ -708,10 +710,47 @@ class TestFetchBattingSplits:
 
         assert data["fallback batter"]["source"] == "marcel_1yr"
 
+    def test_source_statuses_capture_batting_overall_and_split_seasons(self, monkeypatch):
+        class FakeFrame:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def to_dict(self, orient="records"):
+                return self.rows
+
+        rows_2026 = [
+            {"Name": "Status Batter", "PA": 120, "K%": 0.21, "BB%": 0.09, "HBP": 2, "H": 30, "2B": 5, "3B": 1, "HR": 4, "IDfg": 1, "Team": "ABC", "Bat": "R"},
+        ]
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda kind, season, max_age_hours=None: {"status batter": _raw_batter("Status Batter")} if season == 2025 else None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            "mlb.data.stats._fetch_batting_split_raw_with_status",
+            lambda season, split_month, use_cache, **kwargs: (
+                ({"status batter": _raw_batter("Status Batter")} if season == 2025 else {}),
+                ("cache" if season == 2025 else "fresh"),
+            ),
+        )
+        monkeypatch.setattr(
+            "mlb.data.stats._import_pybaseball",
+            lambda: (
+                lambda season, **kwargs: FakeFrame(rows_2026) if season == 2026 else (_ for _ in ()).throw(RuntimeError(f"{season} blocked")),
+                None,
+            ),
+        )
+
+        _, source_statuses = fetch_batting_splits_with_statuses(season=2026, use_cache=True)
+
+        status_map = {status.source_name: status for status in source_statuses}
+        assert status_map["batting_overall_2026"].status == "fresh"
+        assert status_map["batting_overall_2025"].status == "cache"
+        assert status_map["batting_overall_2024"].status == "degraded"
+        assert status_map["batting_split_vs_lhp_2025"].status == "cache"
+        assert status_map["batting_split_vs_lhp_2026"].status == "degraded"
+
     def test_raises_when_no_usable_overall_batting_stats_exist(self, monkeypatch):
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr("mlb.data.stats._fetch_batting_split_raw_with_status", lambda *args, **kwargs: ({}, "fresh"))
         monkeypatch.setattr(
             "mlb.data.stats._import_pybaseball",
             lambda: (lambda season, **kwargs: (_ for _ in ()).throw(RuntimeError(f"{season} blocked")), None),
@@ -740,7 +779,7 @@ class TestFetchPitchingSplits:
 
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw_with_status", lambda *args, **kwargs: ({}, "fresh"))
 
         def fake_pitching_stats(season, **kwargs):
             assert "month" not in kwargs
@@ -774,7 +813,7 @@ class TestFetchPitchingSplits:
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._import_pybaseball", lambda: (None, lambda season, **kwargs: FakeFrame(rows)))
-        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw_with_status", lambda *args, **kwargs: ({}, "fresh"))
 
         data = fetch_pitching_splits(season=2026, use_cache=False)
         assert data["sample pitcher"]["splits"] == {}
@@ -793,7 +832,7 @@ class TestFetchPitchingSplits:
 
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw_with_status", lambda *args, **kwargs: ({}, "fresh"))
 
         def fake_pitching_stats(season, **kwargs):
             if season == 2026:
@@ -808,10 +847,47 @@ class TestFetchPitchingSplits:
 
         assert data["fallback pitcher"]["source"] == "marcel_1yr"
 
+    def test_source_statuses_capture_pitching_overall_and_split_seasons(self, monkeypatch):
+        class FakeFrame:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def to_dict(self, orient="records"):
+                return self.rows
+
+        rows_2026 = [
+            {"Name": "Status Pitcher", "IP": 90.0, "H": 70, "2B": 12, "3B": 1, "HR": 10, "BB": 25, "HBP": 2, "SO": 95, "IDfg": 2, "Team": "ABC", "Throws": "L"},
+        ]
+        monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda kind, season, max_age_hours=None: {"status pitcher": _raw_pitcher("Status Pitcher")} if season == 2025 else None)
+        monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            "mlb.data.stats._fetch_pitching_split_raw_with_status",
+            lambda season, split_month, use_cache, **kwargs: (
+                ({"status pitcher": _raw_pitcher("Status Pitcher")} if season == 2025 else {}),
+                ("cache" if season == 2025 else "fresh"),
+            ),
+        )
+        monkeypatch.setattr(
+            "mlb.data.stats._import_pybaseball",
+            lambda: (
+                None,
+                lambda season, **kwargs: FakeFrame(rows_2026) if season == 2026 else (_ for _ in ()).throw(RuntimeError(f"{season} blocked")),
+            ),
+        )
+
+        _, source_statuses = fetch_pitching_splits_with_statuses(season=2026, use_cache=True)
+
+        status_map = {status.source_name: status for status in source_statuses}
+        assert status_map["pitching_overall_2026"].status == "fresh"
+        assert status_map["pitching_overall_2025"].status == "cache"
+        assert status_map["pitching_overall_2024"].status == "degraded"
+        assert status_map["pitching_split_vs_lhb_2025"].status == "cache"
+        assert status_map["pitching_split_vs_lhb_2026"].status == "degraded"
+
     def test_raises_when_no_usable_overall_pitching_stats_exist(self, monkeypatch):
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
-        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw", lambda *args, **kwargs: {})
+        monkeypatch.setattr("mlb.data.stats._fetch_pitching_split_raw_with_status", lambda *args, **kwargs: ({}, "fresh"))
         monkeypatch.setattr(
             "mlb.data.stats._import_pybaseball",
             lambda: (None, lambda season, **kwargs: (_ for _ in ()).throw(RuntimeError(f"{season} blocked"))),

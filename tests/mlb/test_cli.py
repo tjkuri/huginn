@@ -74,15 +74,22 @@ class TestTeamFilter:
 class TestVerboseBehavior:
     def test_load_schedule_and_stats_verbose_matches_non_verbose_fetch_behavior(self, monkeypatch):
         monkeypatch.setattr("mlb.scripts.simulate_game.fetch_todays_games", lambda date: [{"game_id": "1"}])
-        monkeypatch.setattr("mlb.scripts.simulate_game.fetch_batting_splits", lambda season: {"batter": {"source": "marcel_1yr"}})
-        monkeypatch.setattr("mlb.scripts.simulate_game.fetch_pitching_splits", lambda season: {"pitcher": {"source": "marcel_1yr"}})
+        monkeypatch.setattr(
+            "mlb.scripts.simulate_game.fetch_batting_splits_with_statuses",
+            lambda season: ({"batter": {"source": "marcel_1yr"}}, []),
+        )
+        monkeypatch.setattr(
+            "mlb.scripts.simulate_game.fetch_pitching_splits_with_statuses",
+            lambda season: ({"pitcher": {"source": "marcel_1yr"}}, []),
+        )
 
-        quiet_games, quiet_batting, quiet_pitching = load_schedule_and_stats("2026-04-06", verbose=False)
-        verbose_games, verbose_batting, verbose_pitching = load_schedule_and_stats("2026-04-06", verbose=True)
+        quiet_games, quiet_batting, quiet_pitching, quiet_statuses = load_schedule_and_stats("2026-04-06", verbose=False)
+        verbose_games, verbose_batting, verbose_pitching, verbose_statuses = load_schedule_and_stats("2026-04-06", verbose=True)
 
         assert quiet_games == verbose_games
         assert quiet_batting == verbose_batting
         assert quiet_pitching == verbose_pitching
+        assert quiet_statuses == verbose_statuses
 
     def test_simulate_game_context_uses_same_seed_stream_in_verbose_mode(self, monkeypatch):
         seed_calls: list[tuple[int, int]] = []
@@ -126,14 +133,16 @@ class TestVerboseBehavior:
         monkeypatch.setattr("mlb.scripts.simulate_game.random.randint", lambda a, b: 24680)
         monkeypatch.setattr(
             "mlb.scripts.simulate_game.load_schedule_and_stats",
-            lambda target_date, verbose=False: (
+            lambda target_date, verbose=False, json_mode=False: (
                 [{"game_id": "1", "away_team": "MIL", "home_team": "BOS"}],
                 {"batter": {}},
                 {"pitcher": {}},
+                [],
             ),
         )
         preload_calls = []
         monkeypatch.setattr("mlb.scripts.simulate_game.preload_run_context", lambda games: preload_calls.append(list(games)))
+        monkeypatch.setattr("mlb.scripts.simulate_game.build_global_quality_panel", lambda statuses: None)
         monkeypatch.setattr("mlb.scripts.simulate_game.build_game_context", lambda game, batting, pitching, preload: SimpleNamespace(
             game_id="1",
             date="2026-04-06",
@@ -198,19 +207,21 @@ class TestVerboseBehavior:
 
         monkeypatch.setattr(
             "mlb.scripts.simulate_game.load_schedule_and_stats",
-            lambda target_date, verbose=False: (
+            lambda target_date, verbose=False, json_mode=False: (
                 [
                     {"game_id": "1", "away_team": "MIL", "home_team": "BOS"},
                     {"game_id": "2", "away_team": "NYY", "home_team": "TOR"},
                 ],
                 {"batter": {}},
                 {"pitcher": {}},
+                [],
             ),
         )
         monkeypatch.setattr(
             "mlb.scripts.simulate_game.preload_run_context",
             lambda games: preload_calls.append([game["game_id"] for game in games]) or "preloaded",
         )
+        monkeypatch.setattr("mlb.scripts.simulate_game.build_global_quality_panel", lambda statuses: None)
         monkeypatch.setattr(
             "mlb.scripts.simulate_game.build_game_context",
             lambda game, batting, pitching, preload: build_calls.append((game["game_id"], preload)) or (_ for _ in ()).throw(RuntimeError("stop after preload")),
@@ -230,3 +241,93 @@ class TestVerboseBehavior:
         assert exit_code == 1
         assert preload_calls == [["2"]]
         assert build_calls == [("2", "preloaded")]
+
+    def test_run_cli_json_wraps_games_and_global_statuses(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "mlb.scripts.simulate_game.load_schedule_and_stats",
+            lambda target_date, verbose=False, json_mode=False: (
+                [{"game_id": "1", "away_team": "MIL", "home_team": "BOS"}],
+                {"batter": {}},
+                {"pitcher": {}},
+                [{"source_name": "batting_overall_2026", "status": "cache"}],
+            ),
+        )
+        monkeypatch.setattr("mlb.scripts.simulate_game.preload_run_context", lambda games: "preloaded")
+        monkeypatch.setattr("mlb.scripts.simulate_game.build_game_context", lambda game, batting, pitching, preload: SimpleNamespace(
+            game_id="1",
+            date="2026-04-06",
+            away_lineup=SimpleNamespace(team_name="MIL"),
+            home_lineup=SimpleNamespace(team_name="BOS"),
+            park_factors=SimpleNamespace(venue_name="Fenway Park"),
+            source_statuses=[],
+        ))
+        result = SimpleNamespace(
+            game_id="1",
+            n_simulations=1,
+            away_team="MIL",
+            home_team="BOS",
+            away_runs_mean=1.0,
+            away_runs_std=0.0,
+            home_runs_mean=1.0,
+            home_runs_std=0.0,
+            total_runs_mean=2.0,
+            total_runs_std=0.0,
+            home_win_pct=0.5,
+            away_win_pct=0.5,
+            player_stats={},
+            betting_lines={},
+            run_distributions={},
+        )
+        monkeypatch.setattr(
+            "mlb.scripts.simulate_game.simulate_game_context",
+            lambda context, n_simulations, base_seed, verbose=False, progress_label=None: (result, []),
+        )
+        monkeypatch.setattr(
+            "mlb.scripts.simulate_game.serialize_simulation_result",
+            lambda result, game_context, seed, data_warnings: {"game_id": "1", "seed": seed},
+        )
+
+        args = Namespace(
+            date="2026-04-06",
+            game_id=None,
+            team=None,
+            sims=1,
+            seed=None,
+            json=True,
+            verbose=False,
+        )
+        exit_code = run_cli(args)
+
+        assert exit_code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["games"] == [{"game_id": "1", "seed": None}]
+        assert payload["global_source_statuses"] == [{"source_name": "batting_overall_2026", "status": "cache"}]
+
+    def test_run_cli_json_no_games_uses_wrapped_success_shape(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            "mlb.scripts.simulate_game.load_schedule_and_stats",
+            lambda target_date, verbose=False, json_mode=False: (
+                [],
+                {"batter": {}},
+                {"pitcher": {}},
+                [{"source_name": "batting_overall_2026", "status": "cache"}],
+            ),
+        )
+
+        args = Namespace(
+            date="2026-04-06",
+            game_id=None,
+            team=None,
+            sims=1,
+            seed=None,
+            json=True,
+            verbose=False,
+        )
+        exit_code = run_cli(args)
+
+        assert exit_code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload == {
+            "games": [],
+            "global_source_statuses": [{"source_name": "batting_overall_2026", "status": "cache"}],
+        }

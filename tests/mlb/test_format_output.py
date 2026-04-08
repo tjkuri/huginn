@@ -4,6 +4,7 @@ from mlb.config import Hand, Outcome, WindDirection
 from mlb.data.models import (
     BaseState,
     BatterStats,
+    DataSourceStatus,
     GameContext,
     Lineup,
     PAResult,
@@ -58,6 +59,16 @@ def _pa(outcome: Outcome, batter_id: str, pitcher_id: str, runs_scored: int = 0)
         inning=1,
         runners_before=BaseState(),
         runs_scored=runs_scored,
+    )
+
+
+def _status(source_name: str, status: str, detail: str) -> DataSourceStatus:
+    return DataSourceStatus(
+        source_name=source_name,
+        role="optional_enrichment",
+        scope="game_specific",
+        status=status,
+        detail=detail,
     )
 
 
@@ -148,6 +159,35 @@ def test_plain_report_uses_prop_market_projection_columns():
     assert "QS%" in report
     assert "K/9" not in report
     assert "ERA*" not in report
+
+
+def test_global_quality_panel_shows_run_wide_statuses():
+    panel = format_output.build_global_quality_panel(
+        [
+            DataSourceStatus(
+                source_name="batting_overall_2026",
+                role="required",
+                scope="run_wide",
+                status="fresh",
+                detail="Batting overall 2026: fetched fresh",
+            ),
+            DataSourceStatus(
+                source_name="batting_split_vs_lhp_2026",
+                role="optional_enrichment",
+                scope="run_wide",
+                status="degraded",
+                detail="Batting split VS LHP 2026: fetch failed; split excluded from Marcel",
+            ),
+        ]
+    )
+
+    console = Console(width=90, record=True)
+    console.print(panel)
+    output = console.export_text()
+
+    assert "RUN-WIDE DATA QUALITY" in output
+    assert "Batting overall 2026: fetched fresh" in output
+    assert "Batting split VS LHP 2026: fetch failed; split excluded from Marcel" in output
 
 
 def test_rich_report_hides_quality_panel_when_there_are_no_warnings():
@@ -334,6 +374,10 @@ def test_rich_report_shows_lineup_fallback_warnings():
         weather=Weather(70.0, 4.0, WindDirection.CROSS, 45.0, is_indoor=False),
         away_lineup_source="fallback_roster_order",
         home_lineup_source="confirmed",
+        source_statuses=[
+            _status("away_lineup", "degraded", "Away lineup used roster fallback"),
+            _status("home_lineup", "fresh", "Home lineup confirmed from boxscore"),
+        ],
     )
 
     games = [
@@ -375,9 +419,8 @@ def test_rich_report_shows_lineup_fallback_warnings():
     output = console.export_text()
 
     assert "DATA QUALITY" in output
-    assert "Away lineup: fallback active-roster order" in output
-    assert "Fallback lineups may differ materially from the eventual batting order." in output
-    assert "Home lineup: fallback active-roster order" not in output
+    assert "Away lineup: Away lineup used roster fallback" in output
+    assert "Home lineup: Home lineup confirmed from boxscore" in output
 
 
 def test_rich_report_shows_first_roster_arm_warning_only():
@@ -411,6 +454,10 @@ def test_rich_report_shows_first_roster_arm_warning_only():
         weather=Weather(70.0, 4.0, WindDirection.CROSS, 45.0, is_indoor=False),
         away_starter_source="first_roster_arm",
         home_starter_source="probable",
+        source_statuses=[
+            _status("away_starter", "degraded", "Away starter source: first_roster_arm"),
+            _status("home_starter", "fresh", "Home starter source: probable"),
+        ],
     )
 
     games = [
@@ -451,5 +498,5 @@ def test_rich_report_shows_first_roster_arm_warning_only():
     console.print(renderable)
     output = console.export_text()
 
-    assert "Away starter: roster fallback (no probable pitcher listed)" in output
-    assert "Home starter: roster fallback" not in output
+    assert "Away starter: Away starter source: first_roster_arm" in output
+    assert "Home starter: Home starter source: probable" in output

@@ -15,8 +15,13 @@ from enum import Enum
 from mlb.config import LEAGUE_AVERAGES, NUM_SIMULATIONS, SEASON
 from mlb.data.builder import build_game_context, preload_run_context
 from mlb.data.lineups import fetch_todays_games
-from mlb.data.models import GameContext, SimulatedGame, SimulationResult
-from mlb.data.stats import fetch_batting_splits, fetch_pitching_splits
+from mlb.data.models import DataSourceStatus, GameContext, SimulatedGame, SimulationResult
+from mlb.data.stats import (
+    fetch_batting_splits,
+    fetch_batting_splits_with_statuses,
+    fetch_pitching_splits,
+    fetch_pitching_splits_with_statuses,
+)
 from mlb.engine.aggregate import (
     compute_betting_lines,
     compute_player_stats,
@@ -24,7 +29,7 @@ from mlb.engine.aggregate import (
     compute_win_probability,
     run_simulations,
 )
-from mlb.scripts.format_output import build_terminal_output
+from mlb.scripts.format_output import build_global_quality_panel, build_terminal_output
 
 try:
     from rich.console import Console
@@ -224,17 +229,23 @@ def simulate_game_context(
     return result, all_games
 
 
-def load_schedule_and_stats(target_date: str, verbose: bool = False) -> tuple[list[dict], dict[str, dict], dict[str, dict]]:
+def load_schedule_and_stats(
+    target_date: str,
+    verbose: bool = False,
+    json_mode: bool = False,
+) -> tuple[list[dict], dict[str, dict], dict[str, dict], list[DataSourceStatus]]:
     """Fetch schedule and cached/fresh stat inputs."""
     if verbose:
         logger.info("Fetching schedule for %s...", target_date)
-    with _status_context("Fetching schedule...", json_mode=False):
+    with _status_context("Fetching schedule...", json_mode=json_mode):
         games = fetch_todays_games(date=target_date)
+    global_source_statuses: list[DataSourceStatus] = []
     if verbose:
         logger.info("%s games found", len(games))
         logger.info("Loading batting stats...")
-    with _status_context("Loading batting stats...", json_mode=False):
-        batting_data = fetch_batting_splits(season=SEASON)
+    with _status_context("Loading batting stats...", json_mode=json_mode):
+        batting_data, batting_statuses = fetch_batting_splits_with_statuses(season=SEASON)
+        global_source_statuses.extend(batting_statuses)
     if verbose:
         counts: dict[str, int] = {}
         for player in batting_data.values():
@@ -244,15 +255,16 @@ def load_schedule_and_stats(target_date: str, verbose: bool = False) -> tuple[li
 
     if verbose:
         logger.info("Loading pitching stats...")
-    with _status_context("Loading pitching stats...", json_mode=False):
-        pitching_data = fetch_pitching_splits(season=SEASON)
+    with _status_context("Loading pitching stats...", json_mode=json_mode):
+        pitching_data, pitching_statuses = fetch_pitching_splits_with_statuses(season=SEASON)
+        global_source_statuses.extend(pitching_statuses)
     if verbose:
         counts = {}
         for player in pitching_data.values():
             src = player.get("source", "other")
             counts[src] = counts.get(src, 0) + 1
         logger.info("Pitching stats loaded: %s", counts)
-    return games, batting_data, pitching_data
+    return games, batting_data, pitching_data, global_source_statuses
 
 
 def run_cli(args: argparse.Namespace) -> int:
@@ -260,12 +272,11 @@ def run_cli(args: argparse.Namespace) -> int:
     configure_logging(args.verbose, args.json)
 
     try:
-        if args.json:
-            games = fetch_todays_games(date=args.date)
-            batting_data = fetch_batting_splits(season=SEASON)
-            pitching_data = fetch_pitching_splits(season=SEASON)
-        else:
-            games, batting_data, pitching_data = load_schedule_and_stats(args.date, verbose=args.verbose)
+        games, batting_data, pitching_data, global_source_statuses = load_schedule_and_stats(
+            args.date,
+            verbose=args.verbose,
+            json_mode=args.json,
+        )
     except Exception as exc:
         if args.json:
             print(json.dumps({"error": str(exc)}))
@@ -281,7 +292,7 @@ def run_cli(args: argparse.Namespace) -> int:
         if args.game_id:
             message = f"Game {args.game_id} was not found for {args.date}."
         if args.json:
-            print(json.dumps([]))
+            print(json.dumps({"games": [], "global_source_statuses": _serialize_value(global_source_statuses)}))
         else:
             print(message)
         return 0
@@ -297,6 +308,11 @@ def run_cli(args: argparse.Namespace) -> int:
 
     outputs: list[dict] = []
     had_success = False
+
+    if not args.json and TERMINAL_CONSOLE is not None:
+        global_quality_panel = build_global_quality_panel(global_source_statuses)
+        if global_quality_panel is not None:
+            TERMINAL_CONSOLE.print(global_quality_panel)
 
     for index, game in enumerate(games, start=1):
         label = f"{game.get('away_team', 'Away')} @ {game.get('home_team', 'Home')}"
@@ -324,7 +340,9 @@ def run_cli(args: argparse.Namespace) -> int:
             continue
 
         had_success = True
-        outputs.append(serialize_simulation_result(result, context, requested_game_seed, data_warnings))
+        outputs.append(
+            serialize_simulation_result(result, context, requested_game_seed, data_warnings)
+        )
         if args.verbose:
             logger.info("done (%.1fs)", time.time() - start_time)
         if not args.json:
@@ -350,7 +368,10 @@ def run_cli(args: argparse.Namespace) -> int:
                 TERMINAL_CONSOLE.print(renderable)
 
     if args.json:
-        print(json.dumps(outputs, indent=None))
+        print(json.dumps({
+            "games": outputs,
+            "global_source_statuses": _serialize_value(global_source_statuses),
+        }, indent=None))
     elif not had_success:
         print("No games could be simulated with the available data.")
 

@@ -18,7 +18,7 @@ from mlb.config import (
     SEASON,
     STATS_CACHE_MAX_AGE_HOURS,
 )
-from mlb.data.models import BatterStats, PitcherStats
+from mlb.data.models import BatterStats, DataSourceStatus, PitcherStats
 from mlb.utils.normalize import normalize_name as _normalize_name
 
 logger = logging.getLogger(__name__)
@@ -994,10 +994,30 @@ def _fetch_batting_season_raw(
     month: int | None = None,
     split_type: str = "overall",
 ) -> dict[str, dict]:
+    players, _ = _fetch_batting_season_raw_with_status(
+        season,
+        batting_stats,
+        use_cache,
+        kind=kind,
+        month=month,
+        split_type=split_type,
+    )
+    return players
+
+
+def _fetch_batting_season_raw_with_status(
+    season: int,
+    batting_stats,
+    use_cache: bool,
+    *,
+    kind: str = "batting",
+    month: int | None = None,
+    split_type: str = "overall",
+) -> tuple[dict[str, dict], str]:
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return _enrich_batter_handedness(cached, season, kind)
+            return _enrich_batter_handedness(cached, season, kind), "cache"
 
     fetch_kwargs: dict[str, Any] = {"qual": 1}
     if month is not None:
@@ -1013,7 +1033,7 @@ def _fetch_batting_season_raw(
 
     players = _enrich_batter_handedness(players, season, kind)
     _save_raw_cache(kind, season, players)
-    return players
+    return players, "fresh"
 
 
 def _fetch_pitching_season_raw(
@@ -1025,10 +1045,30 @@ def _fetch_pitching_season_raw(
     month: int | None = None,
     split_type: str = "overall",
 ) -> dict[str, dict]:
+    players, _ = _fetch_pitching_season_raw_with_status(
+        season,
+        pitching_stats,
+        use_cache,
+        kind=kind,
+        month=month,
+        split_type=split_type,
+    )
+    return players
+
+
+def _fetch_pitching_season_raw_with_status(
+    season: int,
+    pitching_stats,
+    use_cache: bool,
+    *,
+    kind: str = "pitching",
+    month: int | None = None,
+    split_type: str = "overall",
+) -> tuple[dict[str, dict], str]:
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return _enrich_pitcher_handedness(cached, season, kind)
+            return _enrich_pitcher_handedness(cached, season, kind), "cache"
 
     fetch_kwargs: dict[str, Any] = {"qual": 1}
     if month is not None:
@@ -1044,7 +1084,7 @@ def _fetch_pitching_season_raw(
 
     players = _enrich_pitcher_handedness(players, season, kind)
     _save_raw_cache(kind, season, players)
-    return players
+    return players, "fresh"
 
 
 def _fangraphs_split_query_params(
@@ -1140,10 +1180,28 @@ def _fetch_batting_split_raw(
     kind: str,
     split_type: str,
 ) -> dict[str, dict]:
+    players, _ = _fetch_batting_split_raw_with_status(
+        season,
+        split_month,
+        use_cache,
+        kind=kind,
+        split_type=split_type,
+    )
+    return players
+
+
+def _fetch_batting_split_raw_with_status(
+    season: int,
+    split_month: int,
+    use_cache: bool,
+    *,
+    kind: str,
+    split_type: str,
+) -> tuple[dict[str, dict], str]:
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return _enrich_batter_handedness(cached, season, kind)
+            return _enrich_batter_handedness(cached, season, kind), "cache"
 
     frame = _fetch_fangraphs_split_frame(season, split_month, stats="bat")
     players: dict[str, dict] = {}
@@ -1155,7 +1213,7 @@ def _fetch_batting_split_raw(
 
     players = _enrich_batter_handedness(players, season, kind)
     _save_raw_cache(kind, season, players)
-    return players
+    return players, "fresh"
 
 
 def _fetch_pitching_split_raw(
@@ -1166,10 +1224,28 @@ def _fetch_pitching_split_raw(
     kind: str,
     split_type: str,
 ) -> dict[str, dict]:
+    players, _ = _fetch_pitching_split_raw_with_status(
+        season,
+        split_month,
+        use_cache,
+        kind=kind,
+        split_type=split_type,
+    )
+    return players
+
+
+def _fetch_pitching_split_raw_with_status(
+    season: int,
+    split_month: int,
+    use_cache: bool,
+    *,
+    kind: str,
+    split_type: str,
+) -> tuple[dict[str, dict], str]:
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return _enrich_pitcher_handedness(cached, season, kind)
+            return _enrich_pitcher_handedness(cached, season, kind), "cache"
 
     frame = _fetch_fangraphs_split_frame(season, split_month, stats="pit")
     players: dict[str, dict] = {}
@@ -1181,7 +1257,28 @@ def _fetch_pitching_split_raw(
 
     players = _enrich_pitcher_handedness(players, season, kind)
     _save_raw_cache(kind, season, players)
-    return players
+    return players, "fresh"
+
+
+def _status_entry(
+    source_name: str,
+    *,
+    role: str,
+    status: str,
+    detail: str,
+) -> DataSourceStatus:
+    return DataSourceStatus(
+        source_name=source_name,
+        role=role,
+        scope="run_wide",
+        status=status,
+        detail=detail,
+    )
+
+
+def _source_tier_detail(label: str, target_season: int, source_tier: str) -> str:
+    source_text = "loaded from cache" if source_tier == "cache" else "fetched fresh"
+    return f"{label} {target_season}: {source_text}"
 
 
 def _load_overall_seasons(
@@ -1190,13 +1287,16 @@ def _load_overall_seasons(
     use_cache: bool,
     *,
     label: str,
+    source_prefix: str,
+    source_statuses: list[DataSourceStatus] | None = None,
 ) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
     """Fetch overall seasons independently so one failure does not abort Marcel."""
     results: dict[int, dict[str, dict]] = {}
     seasons = (season, season - 1, season - 2)
     for target_season in seasons:
+        source_name = f"{source_prefix}_{target_season}"
         try:
-            results[target_season] = fetch_season_raw(target_season, use_cache)
+            players, source_tier = fetch_season_raw(target_season, use_cache)
         except Exception as exc:
             logger.warning(
                 "%s overall fetch failed for %d (%s); season excluded from Marcel",
@@ -1205,6 +1305,37 @@ def _load_overall_seasons(
                 exc,
             )
             results[target_season] = {}
+            if source_statuses is not None:
+                source_statuses.append(
+                    _status_entry(
+                        source_name,
+                        role="required",
+                        status="degraded",
+                        detail=f"{label} overall {target_season}: fetch failed; season excluded from Marcel",
+                    )
+                )
+            continue
+
+        results[target_season] = players
+        if source_statuses is not None:
+            if players:
+                source_statuses.append(
+                    _status_entry(
+                        source_name,
+                        role="required",
+                        status=source_tier,
+                        detail=_source_tier_detail(f"{label} overall", target_season, source_tier),
+                    )
+                )
+            else:
+                source_statuses.append(
+                    _status_entry(
+                        source_name,
+                        role="required",
+                        status="degraded",
+                        detail=f"{label} overall {target_season}: no usable rows; season excluded from Marcel",
+                    )
+                )
 
     if not any(results[target_season] for target_season in seasons):
         joined = ", ".join(str(target_season) for target_season in seasons)
@@ -1213,34 +1344,101 @@ def _load_overall_seasons(
     return results[season], results[season - 1], results[season - 2]
 
 
-def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
-    """Fetch batting stats for three seasons and merge via Marcel projection."""
+def _load_split_seasons(
+    split_fetches: list[tuple[int, int, str, str]],
+    fetch_split_raw,
+    use_cache: bool,
+    *,
+    label: str,
+    source_prefix: str,
+    source_statuses: list[DataSourceStatus] | None = None,
+) -> dict[tuple[int, str], dict[str, dict]]:
+    """Fetch split seasons independently so one 403 does not discard all splits."""
+    split_results: dict[tuple[int, str], dict[str, dict]] = {}
+    for target_season, split_month, kind, split_type in split_fetches:
+        source_name = f"{source_prefix}_{split_type}_{target_season}"
+        try:
+            players, source_tier = fetch_split_raw(
+                target_season,
+                split_month,
+                use_cache,
+                kind=kind,
+                split_type=split_type,
+            )
+        except Exception as exc:
+            logger.warning("%s split fetch failed for %d %s (%s); split excluded from Marcel", label, target_season, split_type, exc)
+            split_results[(target_season, split_type)] = {}
+            if source_statuses is not None:
+                readable_split = split_type.replace("_", " ").upper()
+                source_statuses.append(
+                    _status_entry(
+                        source_name,
+                        role="optional_enrichment",
+                        status="degraded",
+                        detail=f"{label} split {readable_split} {target_season}: fetch failed; split excluded from Marcel",
+                    )
+                )
+            continue
+
+        split_results[(target_season, split_type)] = players
+        if source_statuses is not None:
+            if players:
+                readable_split = split_type.replace("_", " ").upper()
+                source_statuses.append(
+                    _status_entry(
+                        source_name,
+                        role="optional_enrichment",
+                        status=source_tier,
+                        detail=_source_tier_detail(f"{label} split {readable_split}", target_season, source_tier),
+                    )
+                )
+            else:
+                readable_split = split_type.replace("_", " ").upper()
+                source_statuses.append(
+                    _status_entry(
+                        source_name,
+                        role="optional_enrichment",
+                        status="degraded",
+                        detail=f"{label} split {readable_split} {target_season}: no usable rows; split excluded from Marcel",
+                    )
+                )
+    return split_results
+
+
+def fetch_batting_splits_with_statuses(
+    season: int = SEASON,
+    use_cache: bool = True,
+) -> tuple[dict[str, dict], list[DataSourceStatus]]:
+    """Fetch batting stats plus run-wide source statuses."""
+    source_statuses: list[DataSourceStatus] = []
     batting_stats, _ = _import_pybaseball()
     s1_players, s2_players, s3_players = _load_overall_seasons(
         season,
-        lambda target_season, cache_enabled: _fetch_batting_season_raw(target_season, batting_stats, cache_enabled),
+        lambda target_season, cache_enabled: _fetch_batting_season_raw_with_status(target_season, batting_stats, cache_enabled),
         use_cache,
         label="Batting",
+        source_prefix="batting_overall",
+        source_statuses=source_statuses,
     )
 
     # Runtime helper already degrades through cache and hardcoded fallback.
     overall_lg = fetch_runtime_overall_league_averages(season=season, use_cache=use_cache)
 
-    # Each season/split combination fails independently so one 403 doesn't discard all splits.
-    split_results: dict[tuple[int, str], dict[str, dict]] = {}
-    for _s, _month, _kind, _split_type in [
-        (season, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
-        (season - 1, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
-        (season - 2, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
-        (season, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
-        (season - 1, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
-        (season - 2, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
-    ]:
-        try:
-            split_results[(_s, _split_type)] = _fetch_batting_split_raw(_s, _month, use_cache, kind=_kind, split_type=_split_type)
-        except Exception as exc:
-            logger.warning("Batting split fetch failed for %d %s (%s); split excluded from Marcel", _s, _split_type, exc)
-            split_results[(_s, _split_type)] = {}
+    split_results = _load_split_seasons(
+        [
+            (season, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
+            (season - 1, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
+            (season - 2, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
+            (season, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
+            (season - 1, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
+            (season - 2, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
+        ],
+        _fetch_batting_split_raw_with_status,
+        use_cache,
+        label="Batting",
+        source_prefix="batting_split",
+        source_statuses=source_statuses,
+    )
 
     s1_vs_lhp = split_results[(season, "vs_lhp")]
     s2_vs_lhp = split_results[(season - 1, "vs_lhp")]
@@ -1269,37 +1467,49 @@ def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[s
         )
         if player is not None:
             players[name] = player
+    return players, source_statuses
+
+
+def fetch_batting_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
+    """Fetch batting stats for three seasons and merge via Marcel projection."""
+    players, _ = fetch_batting_splits_with_statuses(season=season, use_cache=use_cache)
     return players
 
 
-def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
-    """Fetch pitching stats for three seasons and merge via Marcel projection."""
+def fetch_pitching_splits_with_statuses(
+    season: int = SEASON,
+    use_cache: bool = True,
+) -> tuple[dict[str, dict], list[DataSourceStatus]]:
+    """Fetch pitching stats plus run-wide source statuses."""
+    source_statuses: list[DataSourceStatus] = []
     _, pitching_stats = _import_pybaseball()
     s1_players, s2_players, s3_players = _load_overall_seasons(
         season,
-        lambda target_season, cache_enabled: _fetch_pitching_season_raw(target_season, pitching_stats, cache_enabled),
+        lambda target_season, cache_enabled: _fetch_pitching_season_raw_with_status(target_season, pitching_stats, cache_enabled),
         use_cache,
         label="Pitching",
+        source_prefix="pitching_overall",
+        source_statuses=source_statuses,
     )
 
     # Runtime helper already degrades through cache and hardcoded fallback.
     overall_lg = fetch_runtime_overall_league_averages(season=season, use_cache=use_cache)
 
-    # Each season/split combination fails independently so one 403 doesn't discard all splits.
-    split_results: dict[tuple[int, str], dict[str, dict]] = {}
-    for _s, _month, _kind, _split_type in [
-        (season, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
-        (season - 1, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
-        (season - 2, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
-        (season, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
-        (season - 1, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
-        (season - 2, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
-    ]:
-        try:
-            split_results[(_s, _split_type)] = _fetch_pitching_split_raw(_s, _month, use_cache, kind=_kind, split_type=_split_type)
-        except Exception as exc:
-            logger.warning("Pitching split fetch failed for %d %s (%s); split excluded from Marcel", _s, _split_type, exc)
-            split_results[(_s, _split_type)] = {}
+    split_results = _load_split_seasons(
+        [
+            (season, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
+            (season - 1, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
+            (season - 2, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
+            (season, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
+            (season - 1, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
+            (season - 2, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
+        ],
+        _fetch_pitching_split_raw_with_status,
+        use_cache,
+        label="Pitching",
+        source_prefix="pitching_split",
+        source_statuses=source_statuses,
+    )
 
     s1_vs_lhb = split_results[(season, "vs_lhb")]
     s2_vs_lhb = split_results[(season - 1, "vs_lhb")]
@@ -1323,6 +1533,12 @@ def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[
         )
         if player is not None:
             players[name] = player
+    return players, source_statuses
+
+
+def fetch_pitching_splits(season: int = SEASON, use_cache: bool = True) -> dict[str, dict]:
+    """Fetch pitching stats for three seasons and merge via Marcel projection."""
+    players, _ = fetch_pitching_splits_with_statuses(season=season, use_cache=use_cache)
     return players
 
 
