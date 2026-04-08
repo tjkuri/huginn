@@ -13,7 +13,7 @@ from datetime import date, datetime, timezone
 from enum import Enum
 
 from mlb.config import LEAGUE_AVERAGES, NUM_SIMULATIONS, SEASON
-from mlb.data.builder import build_game_context
+from mlb.data.builder import build_game_context, preload_run_context
 from mlb.data.lineups import fetch_todays_games
 from mlb.data.models import GameContext, SimulatedGame, SimulationResult
 from mlb.data.stats import fetch_batting_splits, fetch_pitching_splits
@@ -285,6 +285,15 @@ def run_cli(args: argparse.Namespace) -> int:
             print(message)
         return 0
 
+    try:
+        preload = preload_run_context(games)
+    except Exception as exc:
+        if args.json:
+            print(json.dumps({"error": str(exc)}))
+        else:
+            print(f"Failed to preload shared runtime data: {exc}", file=sys.stderr)
+        return 1
+
     outputs: list[dict] = []
     had_success = False
 
@@ -298,7 +307,7 @@ def run_cli(args: argparse.Namespace) -> int:
 
         try:
             with capture_data_warnings() as data_warnings:
-                context = build_game_context(game, batting_data, pitching_data)
+                context = build_game_context(game, batting_data, pitching_data, preload)
             with _status_context(f"Simulating {args.sims:,} games - {label}...", json_mode=args.json):
                 result, simulated_games = simulate_game_context(
                     context,

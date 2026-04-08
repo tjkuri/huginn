@@ -131,7 +131,9 @@ class TestVerboseBehavior:
                 {"pitcher": {}},
             ),
         )
-        monkeypatch.setattr("mlb.scripts.simulate_game.build_game_context", lambda game, batting, pitching: SimpleNamespace(
+        preload_calls = []
+        monkeypatch.setattr("mlb.scripts.simulate_game.preload_run_context", lambda games: preload_calls.append(list(games)))
+        monkeypatch.setattr("mlb.scripts.simulate_game.build_game_context", lambda game, batting, pitching, preload: SimpleNamespace(
             game_id="1",
             date="2026-04-06",
             away_lineup=SimpleNamespace(team_name="MIL"),
@@ -184,6 +186,46 @@ class TestVerboseBehavior:
         exit_code = run_cli(args)
 
         assert exit_code == 0
+        assert preload_calls == [[{"game_id": "1", "away_team": "MIL", "home_team": "BOS"}]]
         assert captured_render["sample_index"] == 3
         assert captured_render["sample_game"] == "game-c"
         assert "report" in capsys.readouterr().out
+
+    def test_run_cli_preloads_shared_data_once_for_filtered_games(self, monkeypatch):
+        preload_calls = []
+        build_calls = []
+
+        monkeypatch.setattr(
+            "mlb.scripts.simulate_game.load_schedule_and_stats",
+            lambda target_date, verbose=False: (
+                [
+                    {"game_id": "1", "away_team": "MIL", "home_team": "BOS"},
+                    {"game_id": "2", "away_team": "NYY", "home_team": "TOR"},
+                ],
+                {"batter": {}},
+                {"pitcher": {}},
+            ),
+        )
+        monkeypatch.setattr(
+            "mlb.scripts.simulate_game.preload_run_context",
+            lambda games: preload_calls.append([game["game_id"] for game in games]) or "preloaded",
+        )
+        monkeypatch.setattr(
+            "mlb.scripts.simulate_game.build_game_context",
+            lambda game, batting, pitching, preload: build_calls.append((game["game_id"], preload)) or (_ for _ in ()).throw(RuntimeError("stop after preload")),
+        )
+
+        args = Namespace(
+            date="2026-04-06",
+            game_id="2",
+            team=None,
+            sims=3,
+            seed=None,
+            json=False,
+            verbose=False,
+        )
+        exit_code = run_cli(args)
+
+        assert exit_code == 1
+        assert preload_calls == [["2"]]
+        assert build_calls == [("2", "preloaded")]

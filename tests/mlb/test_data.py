@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from mlb.config import Hand
-from mlb.data.builder import build_game_context
+from mlb.data.builder import RunPreload, build_game_context, preload_run_context
 from mlb.data.models import GameContext, ParkFactors
 from mlb.data.park_factors import (
     _convert_savant_index_to_multiplier,
@@ -96,6 +96,17 @@ def _raw_pitcher(name="Test Pitcher", throws="R"):
             "source": "2026_overall",
         },
     }
+
+
+def _preload_fixture(
+    *,
+    bullpen_by_team: dict[str, dict] | None = None,
+    park_factors_by_venue: dict[str, ParkFactors] | None = None,
+) -> RunPreload:
+    return RunPreload(
+        bullpen_by_team=bullpen_by_team or {},
+        park_factors_by_venue=park_factors_by_venue or {},
+    )
 
 
 class TestBuildBatterStats:
@@ -884,6 +895,25 @@ class TestFetchTodaysGames:
 
 
 class TestBuildGameContext:
+    def test_preload_run_context_warms_shared_resources_once(self, monkeypatch):
+        calls = {"league": 0, "bullpen": 0, "parks": []}
+
+        monkeypatch.setattr("mlb.data.builder.ensure_runtime_league_averages", lambda season=2026: calls.__setitem__("league", calls["league"] + 1))
+        monkeypatch.setattr("mlb.data.builder.fetch_team_bullpen_stats", lambda season=2026: calls.__setitem__("bullpen", calls["bullpen"] + 1) or {})
+        monkeypatch.setattr("mlb.data.builder.get_park_factors", lambda venue_name: calls["parks"].append(venue_name) or None)
+
+        preload_run_context(
+            [
+                {"home_team": "Boston Red Sox", "venue": "Fenway Park"},
+                {"home_team": "Boston Red Sox", "venue": "Fenway Park"},
+                {"home_team": "Houston Astros", "venue": ""},
+            ]
+        )
+
+        assert calls["league"] == 1
+        assert calls["bullpen"] == 1
+        assert sorted(calls["parks"]) == ["Daikin Park", "Fenway Park"]
+
     def test_builds_game_context_with_mock_data(self, monkeypatch):
         game_info = {
             "game_id": "1",
@@ -932,10 +962,9 @@ class TestBuildGameContext:
         }
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: lineup)
-        monkeypatch.setattr("mlb.data.builder.ensure_runtime_league_averages", lambda season=2026: None)
-        monkeypatch.setattr(
-            "mlb.data.builder.fetch_team_bullpen_stats",
-            lambda season=2026: {
+        monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "HOU" if team_name == "Houston Astros" else "")
+        preload = _preload_fixture(
+            bullpen_by_team={
                 "": {
                     "player_id": "away-bullpen",
                     "name": "Away Team Bullpen",
@@ -955,19 +984,17 @@ class TestBuildGameContext:
                     "source": "2026",
                 },
             },
-        )
-        monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "HOU" if team_name == "Houston Astros" else "")
-        monkeypatch.setattr(
-            "mlb.data.builder.get_park_factors",
-            lambda venue_name: ParkFactors(
-                venue_id=venue_name,
-                venue_name=venue_name,
-                factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
-                factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
-            ),
+            park_factors_by_venue={
+                "Daikin Park": ParkFactors(
+                    venue_id="Daikin Park",
+                    venue_name="Daikin Park",
+                    factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                    factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                )
+            },
         )
 
-        context = build_game_context(game_info, batting_data, pitching_data)
+        context = build_game_context(game_info, batting_data, pitching_data, preload)
         assert isinstance(context, GameContext)
         assert len(context.away_lineup.batting_order) == 9
         assert len(context.home_lineup.batting_order) == 9
@@ -984,6 +1011,57 @@ class TestBuildGameContext:
         assert context.home_lineup_source == "confirmed"
         assert context.away_starter_source == "boxscore"
         assert context.home_starter_source == "boxscore"
+
+    def test_missing_preloaded_park_factors_raise_error(self, monkeypatch):
+        game_info = {
+            "game_id": "1",
+            "away_team": "Away Team",
+            "away_team_id": "10",
+            "home_team": "Home Team",
+            "home_team_id": "20",
+            "game_datetime": "2026-04-03T19:10:00Z",
+            "venue": "Wrigley Field",
+            "status": "Scheduled",
+        }
+        lineup = {
+            "away_batters": [
+                {"name": f"Away Batter {i}", "id": f"a{i}", "batting_position": i, "bats": "R"}
+                for i in range(1, 10)
+            ],
+            "home_batters": [
+                {"name": f"Home Batter {i}", "id": f"h{i}", "batting_position": i, "bats": "L"}
+                for i in range(1, 10)
+            ],
+            "away_pitcher": {"name": "Away Starter", "id": "ap", "throws": "R"},
+            "home_pitcher": {"name": "Home Starter", "id": "hp", "throws": "L"},
+        }
+        batting_data = {
+            f"away batter {i}": _raw_batter(name=f"Away Batter {i}", bats="R")
+            for i in range(1, 10)
+        }
+        batting_data.update(
+            {
+                f"home batter {i}": _raw_batter(name=f"Home Batter {i}", bats="L")
+                for i in range(1, 10)
+            }
+        )
+        pitching_data = {
+            "away starter": _raw_pitcher(name="Away Starter", throws="R"),
+            "home starter": _raw_pitcher(name="Home Starter", throws="L"),
+        }
+
+        monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: lineup)
+
+        with pytest.raises(KeyError, match="Missing preloaded park factors"):
+            build_game_context(
+                game_info,
+                batting_data,
+                pitching_data,
+                _preload_fixture(
+                    bullpen_by_team={},
+                    park_factors_by_venue={},
+                ),
+            )
 
     def test_missing_player_falls_back_to_league_average(self, monkeypatch, caplog):
         game_info = {
@@ -1026,21 +1104,21 @@ class TestBuildGameContext:
         }
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: lineup)
-        monkeypatch.setattr("mlb.data.builder.ensure_runtime_league_averages", lambda season=2026: None)
-        monkeypatch.setattr("mlb.data.builder.fetch_team_bullpen_stats", lambda season=2026: {})
         monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "")
-        monkeypatch.setattr(
-            "mlb.data.builder.get_park_factors",
-            lambda venue_name: ParkFactors(
-                venue_id=venue_name,
-                venue_name=venue_name,
-                factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
-                factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
-            ),
+        preload = _preload_fixture(
+            bullpen_by_team={},
+            park_factors_by_venue={
+                "Wrigley Field": ParkFactors(
+                    venue_id="Wrigley Field",
+                    venue_name="Wrigley Field",
+                    factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                    factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                )
+            },
         )
 
         with caplog.at_level(logging.WARNING):
-            context = build_game_context(game_info, batting_data, pitching_data)
+            context = build_game_context(game_info, batting_data, pitching_data, preload)
 
         assert context.away_lineup.batting_order[-1].name == "Away Batter 9"
         assert getattr(context.away_lineup.batting_order[-1], "data_source") == "league_avg"
@@ -1073,20 +1151,20 @@ class TestBuildGameContext:
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: None)
         monkeypatch.setattr("mlb.data.lineups.fetch_team_roster", lambda team_id, season=2026: roster)
-        monkeypatch.setattr("mlb.data.builder.ensure_runtime_league_averages", lambda season=2026: None)
-        monkeypatch.setattr("mlb.data.builder.fetch_team_bullpen_stats", lambda season=2026: {})
         monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "")
-        monkeypatch.setattr(
-            "mlb.data.builder.get_park_factors",
-            lambda venue_name: ParkFactors(
-                venue_id=venue_name,
-                venue_name=venue_name,
-                factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
-                factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
-            ),
+        preload = _preload_fixture(
+            bullpen_by_team={},
+            park_factors_by_venue={
+                "Wrigley Field": ParkFactors(
+                    venue_id="Wrigley Field",
+                    venue_name="Wrigley Field",
+                    factors_vs_lhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                    factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
+                )
+            },
         )
 
-        context = build_game_context(game_info, batting_data, pitching_data)
+        context = build_game_context(game_info, batting_data, pitching_data, preload)
 
         assert context.away_lineup_source == "fallback_roster_order"
         assert context.home_lineup_source == "fallback_roster_order"

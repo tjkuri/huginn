@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from mlb.config import Hand, LEAGUE_AVERAGES, SEASON
 from mlb.data.lineups import build_default_lineup_from_roster, fetch_game_lineup, fetch_team_roster
-from mlb.data.models import BatterStats, GameContext, Lineup
+from mlb.data.models import BatterStats, GameContext, Lineup, ParkFactors
 from mlb.data.park_factors import get_park_factors, get_venue_for_team
 from mlb.data.stats import (
     build_batter_stats,
@@ -18,6 +19,31 @@ from mlb.data.weather import get_game_weather
 from mlb.utils.normalize import normalize_name as _normalize_name
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class RunPreload:
+    """Run-wide data resolved once per CLI invocation."""
+    bullpen_by_team: dict[str, dict]
+    park_factors_by_venue: dict[str, ParkFactors]
+
+
+def preload_run_context(games: list[dict]) -> RunPreload:
+    """Resolve run-wide data needed across one CLI invocation."""
+    ensure_runtime_league_averages(season=SEASON)
+    bullpen_by_team = fetch_team_bullpen_stats(season=SEASON)
+
+    venues = {
+        game.get("venue") or get_venue_for_team(game.get("home_team", "")) or "Unknown Venue"
+        for game in games
+    }
+    park_factors_by_venue: dict[str, ParkFactors] = {}
+    for venue_name in venues:
+        park_factors_by_venue[str(venue_name)] = get_park_factors(str(venue_name))
+    return RunPreload(
+        bullpen_by_team=dict(bullpen_by_team),
+        park_factors_by_venue=park_factors_by_venue,
+    )
 
 
 def _league_average_batter(name: str, bats: str, pitcher_throws: str | None = None) -> dict:
@@ -123,9 +149,9 @@ def _build_pitcher(player: dict | None, pitching_data: dict[str, dict]):
     return pitcher
 
 
-def _build_bullpen(team_name: str) -> list:
+def _build_bullpen(team_name: str, bullpen_by_team: dict[str, dict]) -> list:
     team_code = fangraphs_team_code(team_name)
-    bullpen_data = fetch_team_bullpen_stats(season=SEASON).get(team_code)
+    bullpen_data = bullpen_by_team.get(team_code)
     if bullpen_data is None:
         logger.warning("Missing bullpen data for %s; using league-average fallback", team_name)
         bullpen_data = _league_average_pitcher(f"{team_name} Bullpen", "R")
@@ -231,11 +257,14 @@ def build_game_context(
     game_info: dict,
     batting_data: dict[str, dict],
     pitching_data: dict[str, dict],
+    preload: RunPreload,
 ) -> GameContext:
     """Build a complete simulation-ready GameContext from fetched data."""
-    ensure_runtime_league_averages(season=SEASON)
     lineup_info = _resolve_lineup(game_info)
     venue_name = game_info.get("venue") or get_venue_for_team(game_info.get("home_team", "")) or "Unknown Venue"
+    park_factors = preload.park_factors_by_venue.get(str(venue_name))
+    if park_factors is None:
+        raise KeyError(f"Missing preloaded park factors for venue {venue_name!r}")
 
     away_lineup = Lineup(
         team_id=str(game_info.get("away_team_id") or ""),
@@ -246,7 +275,7 @@ def build_game_context(
             lineup_info.get("home_pitcher"),
         ),
         starting_pitcher=_build_pitcher(lineup_info.get("away_pitcher"), pitching_data),
-        bullpen=_build_bullpen(str(game_info.get("away_team") or "Away Team")),
+        bullpen=_build_bullpen(str(game_info.get("away_team") or "Away Team"), preload.bullpen_by_team),
     )
     home_lineup = Lineup(
         team_id=str(game_info.get("home_team_id") or ""),
@@ -257,7 +286,7 @@ def build_game_context(
             lineup_info.get("away_pitcher"),
         ),
         starting_pitcher=_build_pitcher(lineup_info.get("home_pitcher"), pitching_data),
-        bullpen=_build_bullpen(str(game_info.get("home_team") or "Home Team")),
+        bullpen=_build_bullpen(str(game_info.get("home_team") or "Home Team"), preload.bullpen_by_team),
     )
 
     return GameContext(
@@ -265,7 +294,7 @@ def build_game_context(
         date=str(game_info.get("game_datetime") or ""),
         away_lineup=away_lineup,
         home_lineup=home_lineup,
-        park_factors=get_park_factors(venue_name),
+        park_factors=park_factors,
         weather=get_game_weather(venue_name, str(game_info.get("game_datetime") or "")),
         away_lineup_source=str(lineup_info.get("away_lineup_source") or "confirmed"),
         home_lineup_source=str(lineup_info.get("home_lineup_source") or "confirmed"),
