@@ -747,6 +747,16 @@ class TestFetchBattingSplits:
         assert status_map["batting_split_vs_lhp_2025"].status == "cache"
         assert status_map["batting_split_vs_lhp_2026"].status == "degraded"
 
+    def test_legacy_batting_wrapper_matches_status_return_data(self, monkeypatch):
+        monkeypatch.setattr(
+            "mlb.data.stats.fetch_batting_splits_with_statuses",
+            lambda season=2026, use_cache=True: ({"wrapped batter": {"source": "marcel_1yr"}}, [DataSourceStatus("x", "required", "run_wide", "fresh", "ok")]),
+        )
+
+        data = fetch_batting_splits(season=2026, use_cache=True)
+
+        assert data == {"wrapped batter": {"source": "marcel_1yr"}}
+
     def test_raises_when_no_usable_overall_batting_stats_exist(self, monkeypatch):
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
@@ -883,6 +893,16 @@ class TestFetchPitchingSplits:
         assert status_map["pitching_overall_2024"].status == "degraded"
         assert status_map["pitching_split_vs_lhb_2025"].status == "cache"
         assert status_map["pitching_split_vs_lhb_2026"].status == "degraded"
+
+    def test_legacy_pitching_wrapper_matches_status_return_data(self, monkeypatch):
+        monkeypatch.setattr(
+            "mlb.data.stats.fetch_pitching_splits_with_statuses",
+            lambda season=2026, use_cache=True: ({"wrapped pitcher": {"source": "marcel_1yr"}}, [DataSourceStatus("x", "required", "run_wide", "fresh", "ok")]),
+        )
+
+        data = fetch_pitching_splits(season=2026, use_cache=True)
+
+        assert data == {"wrapped pitcher": {"source": "marcel_1yr"}}
 
     def test_raises_when_no_usable_overall_pitching_stats_exist(self, monkeypatch):
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda *args, **kwargs: None)
@@ -1212,10 +1232,6 @@ class TestBuildGameContext:
         assert context.home_lineup.bullpen[0].name == "Houston Astros Bullpen"
         assert context.weather is not None
         assert context.weather.is_indoor is True
-        assert context.away_lineup_source == "confirmed"
-        assert context.home_lineup_source == "confirmed"
-        assert context.away_starter_source == "boxscore"
-        assert context.home_starter_source == "boxscore"
         status_names = {status.source_name for status in context.source_statuses}
         assert {"away_lineup", "home_lineup", "away_starter", "home_starter", "away_bullpen", "home_bullpen", "park_factors", "weather"} <= status_names
         weather_status = next(status for status in context.source_statuses if status.source_name == "weather")
@@ -1402,10 +1418,6 @@ class TestBuildGameContext:
 
         context = build_game_context(game_info, batting_data, pitching_data, preload)
 
-        assert context.away_lineup_source == "fallback_roster_order"
-        assert context.home_lineup_source == "fallback_roster_order"
-        assert context.away_starter_source == "first_roster_arm"
-        assert context.home_starter_source == "probable"
         away_lineup_status = next(status for status in context.source_statuses if status.source_name == "away_lineup")
         home_lineup_status = next(status for status in context.source_statuses if status.source_name == "home_lineup")
         away_starter_status = next(status for status in context.source_statuses if status.source_name == "away_starter")

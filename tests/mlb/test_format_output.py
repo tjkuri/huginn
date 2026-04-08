@@ -372,8 +372,6 @@ def test_rich_report_shows_lineup_fallback_warnings():
             factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
         ),
         weather=Weather(70.0, 4.0, WindDirection.CROSS, 45.0, is_indoor=False),
-        away_lineup_source="fallback_roster_order",
-        home_lineup_source="confirmed",
         source_statuses=[
             _status("away_lineup", "degraded", "Away lineup used roster fallback"),
             _status("home_lineup", "fresh", "Home lineup confirmed from boxscore"),
@@ -452,8 +450,6 @@ def test_rich_report_shows_first_roster_arm_warning_only():
             factors_vs_rhb={"HR": 1.0, "2B": 1.0, "3B": 1.0, "1B": 1.0, "BB": 1.0, "K": 1.0},
         ),
         weather=Weather(70.0, 4.0, WindDirection.CROSS, 45.0, is_indoor=False),
-        away_starter_source="first_roster_arm",
-        home_starter_source="probable",
         source_statuses=[
             _status("away_starter", "degraded", "Away starter source: first_roster_arm"),
             _status("home_starter", "fresh", "Home starter source: probable"),

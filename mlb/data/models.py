@@ -146,10 +146,6 @@ class GameContext:
     home_lineup: Lineup
     park_factors: ParkFactors
     weather: Weather | None = None
-    away_lineup_source: str = "confirmed"
-    home_lineup_source: str = "confirmed"
-    away_starter_source: str = "boxscore"
-    home_starter_source: str = "boxscore"
     source_statuses: list[DataSourceStatus] = field(default_factory=list)
 
 

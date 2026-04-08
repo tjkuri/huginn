@@ -380,9 +380,5 @@ def build_game_context(
         home_lineup=home_lineup,
         park_factors=park_factors,
         weather=get_game_weather(venue_name, str(game_info.get("game_datetime") or "")),
-        away_lineup_source=str(lineup_info.get("away_lineup_source") or "confirmed"),
-        home_lineup_source=str(lineup_info.get("home_lineup_source") or "confirmed"),
-        away_starter_source=str(lineup_info.get("away_starter_source") or "boxscore"),
-        home_starter_source=str(lineup_info.get("home_starter_source") or "boxscore"),
         source_statuses=source_statuses,
     )
