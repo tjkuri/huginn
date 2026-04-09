@@ -3,13 +3,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
 import time
 from pathlib import Path
 from typing import Any
-
-import requests
 
 from mlb.config import (
     CACHE_DIR,
@@ -25,7 +21,6 @@ from mlb.data.mlb_stats_api import (
     fetch_pitching_split_rows,
 )
 from mlb.data.models import BatterStats, DataSourceStatus, PitcherStats
-from mlb.data.team_codes import TEAM_TO_CODE as _TEAM_TO_FG_CODE
 from mlb.utils.normalize import normalize_name as _normalize_name
 
 logger = logging.getLogger(__name__)
@@ -62,12 +57,10 @@ _PITCHER_REGRESSION_CONSTANT = 150.0
 _PITCHER_RATIO_REGRESSION_CONSTANT = 75.0
 _BATTER_NORMALIZER = 200.0
 _PITCHER_NORMALIZER = 150.0
-_MLB_PEOPLE_URL = "https://statsapi.mlb.com/api/v1/people"
 
 _TEAM_BULLPEN_CACHE: dict[tuple[int, bool], dict[str, dict[str, Any]]] = {}
 _COMPUTED_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[str, float]] = {}
 _MATCHUP_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[tuple[Hand, Hand], dict[str, float]]] = {}
-_PLAYER_HANDEDNESS_CACHE: dict[str, dict[str, str]] = {}
 # ── Raw season stat cache (flat files, no subdirectories) ────────────────────
 
 def _raw_cache_path(kind: str, season: int) -> Path:
@@ -579,137 +572,6 @@ def _apply_runtime_league_averages(rates_by_matchup: dict[tuple[Hand, Hand], dic
 _HARDCODED_LEAGUE_AVERAGES = _copy_league_averages()
 
 
-def _import_pybaseball():
-    pybaseball_cache_dir = Path(CACHE_DIR) / "pybaseball"
-    pybaseball_cache_dir.mkdir(parents=True, exist_ok=True)
-    os.environ.setdefault("PYBASEBALL_CACHE", str(pybaseball_cache_dir))
-    os.environ.setdefault("MPLCONFIGDIR", str(pybaseball_cache_dir / "mplconfig"))
-    try:
-        from pybaseball import batting_stats, cache, pitching_stats
-    except ImportError as exc:
-        raise ImportError(
-            "pybaseball is required for MLB stats fetching. Install it with "
-            "`venv/bin/pip install pybaseball`."
-        ) from exc
-
-    cache.enable()
-    return batting_stats, pitching_stats
-
-
-def _import_playerid_reverse_lookup():
-    try:
-        from pybaseball import playerid_reverse_lookup
-    except ImportError as exc:
-        raise ImportError(
-            "pybaseball is required for MLB stats fetching. Install it with "
-            "`venv/bin/pip install pybaseball`."
-        ) from exc
-    return playerid_reverse_lookup
-
-
-def _chunked(values: list[int], size: int) -> list[list[int]]:
-    return [values[index:index + size] for index in range(0, len(values), size)]
-
-
-def _fetch_people_handedness(person_ids: list[int]) -> dict[str, dict[str, str]]:
-    handedness: dict[str, dict[str, str]] = {}
-    for batch in _chunked(person_ids, 50):
-        response = requests.get(
-            _MLB_PEOPLE_URL,
-            params={"personIds": ",".join(str(person_id) for person_id in batch)},
-            timeout=20,
-        )
-        response.raise_for_status()
-        people = response.json().get("people") or []
-        for person in people:
-            mlbam_id = str(person.get("id") or "").strip()
-            if not mlbam_id:
-                continue
-            handedness[mlbam_id] = {
-                "bats": str(((person.get("batSide") or {}).get("code")) or "").strip().upper(),
-                "throws": str(((person.get("pitchHand") or {}).get("code")) or "").strip().upper(),
-            }
-    return handedness
-
-
-def _resolve_player_handedness(players: dict[str, dict], *, role: str) -> dict[str, dict[str, str]]:
-    missing_fg_ids = sorted(
-        {
-            int(str(player.get("player_id") or "").strip())
-            for player in players.values()
-            if str(player.get("player_id") or "").strip().isdigit()
-            and str(player.get("player_id")) not in _PLAYER_HANDEDNESS_CACHE
-        }
-    )
-    if missing_fg_ids:
-        playerid_reverse_lookup = _import_playerid_reverse_lookup()
-        lookup = playerid_reverse_lookup(missing_fg_ids, key_type="fangraphs")
-        mlbam_ids: list[int] = []
-        fg_to_mlbam: dict[str, str] = {}
-        for row in _frame_to_records(lookup):
-            fg_id = str(_first_present(row, "key_fangraphs", default="")).strip()
-            mlbam_id = str(_first_present(row, "key_mlbam", default="")).strip()
-            if not fg_id or not mlbam_id:
-                continue
-            fg_to_mlbam[fg_id] = mlbam_id
-            mlbam_ids.append(int(mlbam_id))
-
-        mlbam_handedness = _fetch_people_handedness(sorted(set(mlbam_ids)))
-        for fg_id, mlbam_id in fg_to_mlbam.items():
-            info = mlbam_handedness.get(mlbam_id) or {}
-            _PLAYER_HANDEDNESS_CACHE[fg_id] = {
-                "bats": str(info.get("bats") or ""),
-                "throws": str(info.get("throws") or ""),
-            }
-
-    resolved: dict[str, dict[str, str]] = {}
-    for player in players.values():
-        fg_id = str(player.get("player_id") or "").strip()
-        if not fg_id:
-            continue
-        info = _PLAYER_HANDEDNESS_CACHE.get(fg_id) or {}
-        hand_value = str(info.get("bats" if role == "batter" else "throws") or "").strip().upper()
-        if hand_value:
-            resolved[fg_id] = info
-    return resolved
-
-
-def _enrich_batter_handedness(players: dict[str, dict], season: int, kind: str) -> dict[str, dict]:
-    needs_enrichment = any(not _is_valid_hand_code(player.get("bats"), allow_switch=True) for player in players.values())
-    if not needs_enrichment:
-        return players
-
-    handedness = _resolve_player_handedness(players, role="batter")
-    updated = False
-    for player in players.values():
-        fg_id = str(player.get("player_id") or "").strip()
-        bats = str((handedness.get(fg_id) or {}).get("bats") or "").strip().upper()
-        if _is_valid_hand_code(bats, allow_switch=True):
-            player["bats"] = bats
-            updated = True
-    if updated:
-        _save_raw_cache(kind, season, players)
-    return players
-
-
-def _enrich_pitcher_handedness(players: dict[str, dict], season: int, kind: str) -> dict[str, dict]:
-    needs_enrichment = any(not _is_valid_hand_code(player.get("throws")) for player in players.values())
-    if not needs_enrichment:
-        return players
-
-    handedness = _resolve_player_handedness(players, role="pitcher")
-    updated = False
-    for player in players.values():
-        fg_id = str(player.get("player_id") or "").strip()
-        throws = str((handedness.get(fg_id) or {}).get("throws") or "").strip().upper()
-        if _is_valid_hand_code(throws):
-            player["throws"] = throws
-            updated = True
-    if updated:
-        _save_raw_cache(kind, season, players)
-    return players
-
-
 def _frame_to_records(frame: Any) -> list[dict[str, Any]]:
     if isinstance(frame, list):
         return frame
@@ -776,7 +638,8 @@ def _extract_batter_rates(row: dict[str, Any]) -> dict[str, float]:
     hr = _safe_float(_first_present(row, "HR"))
     singles = _safe_float(_first_present(row, "1B", default=hits - doubles - triples - hr))
     hbp = _safe_float(_first_present(row, "HBP"))
-    # pybaseball returns K% and BB% as decimals (e.g. 0.182), not percentages
+    # Upstream rate-like columns are expected to already be decimal fractions
+    # (e.g. 0.182, not 18.2).
     k_rate = _safe_float(_first_present(row, "K%", "SO%", "K_pct", default=-1.0), default=-1.0)
     bb_rate = _safe_float(_first_present(row, "BB%", "BB_pct", default=-1.0), default=-1.0)
     if k_rate < 0:
@@ -1066,7 +929,7 @@ def _fetch_batting_season_raw_with_status(
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return _enrich_batter_handedness(cached, season, kind), "cache"
+            return cached, "cache"
 
     resolved_records, source_tier = (
         (records, "fresh")
@@ -1074,8 +937,6 @@ def _fetch_batting_season_raw_with_status(
         else _fetch_batting_season_records_with_status(season, use_cache, kind=kind)
     )
     players = _build_batting_players_from_records(resolved_records, season, split_type=split_type)
-
-    players = _enrich_batter_handedness(players, season, kind)
     _save_raw_cache(kind, season, players, records=resolved_records)
     return players, source_tier
 
@@ -1107,7 +968,7 @@ def _fetch_pitching_season_raw_with_status(
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return _enrich_pitcher_handedness(cached, season, kind), "cache"
+            return cached, "cache"
 
     resolved_records, source_tier = (
         (records, "fresh")
@@ -1115,8 +976,6 @@ def _fetch_pitching_season_raw_with_status(
         else _fetch_pitching_season_records_with_status(season, use_cache, kind=kind)
     )
     players = _build_pitching_players_from_records(resolved_records, season, split_type=split_type)
-
-    players = _enrich_pitcher_handedness(players, season, kind)
     _save_raw_cache(kind, season, players, records=resolved_records)
     return players, source_tier
 
@@ -1147,15 +1006,13 @@ def _fetch_batting_split_raw_with_status(
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return _enrich_batter_handedness(cached, season, kind), "cache"
+            return cached, "cache"
 
     sit_code = _BATTING_SPLIT_SIT_CODES.get(split_type)
     if sit_code is None:
         raise ValueError(f"Unsupported batting split type: {split_type}")
     records = fetch_batting_split_rows(season, sit_code=sit_code)
     players = _build_batting_players_from_records(records, season, split_type=split_type)
-
-    players = _enrich_batter_handedness(players, season, kind)
     _save_raw_cache(kind, season, players, records=records)
     return players, "fresh"
 
@@ -1186,15 +1043,13 @@ def _fetch_pitching_split_raw_with_status(
     if use_cache:
         cached = _load_raw_cache(kind, season)
         if cached is not None:
-            return _enrich_pitcher_handedness(cached, season, kind), "cache"
+            return cached, "cache"
 
     sit_code = _PITCHING_SPLIT_SIT_CODES.get(split_type)
     if sit_code is None:
         raise ValueError(f"Unsupported pitching split type: {split_type}")
     records = fetch_pitching_split_rows(season, sit_code=sit_code)
     players = _build_pitching_players_from_records(records, season, split_type=split_type)
-
-    players = _enrich_pitcher_handedness(players, season, kind)
     _save_raw_cache(kind, season, players, records=records)
     return players, "fresh"
 
@@ -1741,11 +1596,6 @@ def fetch_team_bullpen_stats(season: int = SEASON, use_cache: bool = True) -> di
     bullpen = _aggregate_team_bullpen_records(records, season)
     _TEAM_BULLPEN_CACHE[cache_key] = bullpen
     return bullpen
-
-
-def fangraphs_team_code(team_name: str) -> str:
-    """Map a full MLB team name to the Fangraphs team code used in stat rows."""
-    return _TEAM_TO_FG_CODE.get(team_name, "")
 
 
 def _effective_batter_hand_for_pitcher(batter_hand: Any, pitcher_throws: Hand) -> Hand:

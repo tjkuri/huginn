@@ -979,6 +979,7 @@ class TestFetchBattingSplits:
             {"Name": "Status Batter", "PA": 120, "K%": 0.21, "BB%": 0.09, "HBP": 2, "H": 30, "2B": 5, "3B": 1, "HR": 4, "ID": 1, "Team": "ABC", "Bats": "R"},
         ]
         monkeypatch.setattr("mlb.data.stats._load_raw_cache", lambda kind, season, max_age_hours=None: {"status batter": _raw_batter("Status Batter")} if season == 2025 else None)
+        monkeypatch.setattr("mlb.data.stats._load_raw_records_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr("mlb.data.stats._save_raw_cache", lambda *args, **kwargs: None)
         monkeypatch.setattr(
             "mlb.data.stats._fetch_batting_split_raw_with_status",
@@ -1479,7 +1480,7 @@ class TestBuildGameContext:
         }
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: lineup)
-        monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "HOU" if team_name == "Houston Astros" else "")
+        monkeypatch.setattr("mlb.data.builder.team_code_for_name", lambda team_name: "HOU" if team_name == "Houston Astros" else "")
         preload = _preload_fixture(
             bullpen_by_team={
                 "": {
@@ -1637,7 +1638,7 @@ class TestBuildGameContext:
         }
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: lineup)
-        monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "")
+        monkeypatch.setattr("mlb.data.builder.team_code_for_name", lambda team_name: "")
         preload = _preload_fixture(
             bullpen_by_team={},
             park_factors_by_venue={
@@ -1695,7 +1696,7 @@ class TestBuildGameContext:
 
         monkeypatch.setattr("mlb.data.builder.fetch_game_lineup", lambda game_id: None)
         monkeypatch.setattr("mlb.data.lineups.fetch_team_roster", lambda team_id, season=2026: roster)
-        monkeypatch.setattr("mlb.data.builder.fangraphs_team_code", lambda team_name: "")
+        monkeypatch.setattr("mlb.data.builder.team_code_for_name", lambda team_name: "")
         preload = _preload_fixture(
             bullpen_by_team={},
             park_factors_by_venue={

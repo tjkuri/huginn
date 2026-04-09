@@ -33,3 +33,8 @@ TEAM_TO_CODE = {
     "Toronto Blue Jays": "TOR",
     "Washington Nationals": "WSN",
 }
+
+
+def team_code_for_name(team_name: str) -> str:
+    """Return the shared stat-source team code for a full MLB team name."""
+    return TEAM_TO_CODE.get(team_name, "")

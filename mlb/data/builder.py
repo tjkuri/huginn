@@ -8,11 +8,11 @@ from mlb.config import Hand, LEAGUE_AVERAGES, SEASON
 from mlb.data.lineups import build_default_lineup_from_roster, fetch_game_lineup, fetch_team_roster
 from mlb.data.models import BatterStats, DataSourceStatus, GameContext, Lineup, ParkFactors
 from mlb.data.park_factors import get_park_factors_with_status, get_venue_for_team
+from mlb.data.team_codes import team_code_for_name
 from mlb.data.stats import (
     build_batter_stats,
     build_pitcher_stats,
     ensure_runtime_league_averages,
-    fangraphs_team_code,
     fetch_team_bullpen_stats,
 )
 from mlb.data.weather import get_game_weather
@@ -165,7 +165,7 @@ def _build_pitcher(player: dict | None, pitching_data: dict[str, dict]):
 
 
 def _build_bullpen(team_name: str, bullpen_by_team: dict[str, dict], source_name: str) -> tuple[list, DataSourceStatus]:
-    team_code = fangraphs_team_code(team_name)
+    team_code = team_code_for_name(team_name)
     bullpen_data = bullpen_by_team.get(team_code)
     if bullpen_data is None:
         logger.warning("Missing bullpen data for %s; using league-average fallback", team_name)

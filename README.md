@@ -20,7 +20,7 @@ Named after Odin's raven who flies out across the world to gather knowledge and 
 Huginn currently has two engines:
 
 - **[NBA](nba/)** — prediction backtest and parameter optimizer. Reads cached predictions from [Yggdrasil](../yggdrasil) and measures how well the model beat the closing line over time.
-- **[MLB](mlb/)** — Monte Carlo game simulation engine. Fetches live rosters, stats, and lineups, simulates thousands of games via the odds-ratio method, and produces betting-line projections and player prop estimates.
+- **[MLB](mlb/)** — Monte Carlo game simulation engine. Fetches live rosters, season stats, and lineups from official MLB APIs, simulates thousands of games via the odds-ratio method, and produces betting-line projections and player prop estimates.
 
 ## Getting Started
 

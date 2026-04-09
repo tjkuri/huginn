@@ -16,10 +16,10 @@ The odds ratio removes it.
 
 ### How player profiles are built
 
-- `pybaseball` provides overall season batting and pitching leaderboards.
+- MLB Stats API provides overall season batting and pitching leaderboards.
   - These are per-player rows and are hand-agnostic.
 
-- FanGraphs legacy split pages provide handedness-specific player rows.
+- MLB Stats API `statSplits` provides handedness-specific player rows.
   - Batters: `vs LHP`, `vs RHP`
   - Pitchers: `vs LHB`, `vs RHB`
 
@@ -173,7 +173,7 @@ Representative 2025 values (actual runtime values may differ slightly):
 Switch hitters bat opposite the pitcher (face RHP → bat left, face LHP → bat right).
 
 These matchup league averages are not fetched as finished league tables. They are derived
-from player split rows when fresh recomputation succeeds.
+from current-season overall and split player rows when fresh recomputation succeeds.
 
 For each handedness bucket:
 
@@ -191,6 +191,8 @@ league_rate[outcome] =
 ```
 
 For batter-derived matchup baselines, the opportunity volume is split `PA`.
+Those current-season rows are cached on disk after the first successful fetch, so later runs
+reuse the same official MLB Stats API payload until the current-season TTL expires.
 
 ### Step 2 — Odds Ratio
 
@@ -463,3 +465,8 @@ The CLI reports data quality in two layers:
   - park-factor provenance
   - placeholder weather
   - player-level fallback notes for the actual matchup
+
+In JSON mode the same split is preserved structurally:
+
+- top-level `global_source_statuses` contains the run-wide stat provenance
+- each game payload contains its own `metadata.source_statuses`

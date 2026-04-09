@@ -78,7 +78,12 @@ Per-player stats averaged across all simulations, matchup-adjusted for the speci
 - `QS%` — quality start probability (6+ IP, ≤3 ER)
 
 ### Data Quality Notes
-Warns when players are using thin-data or league-average projections, and when weather is still using the default placeholder instead of a real feed. Player source tags now reflect the Marcel blend depth (`marcel_3yr`, `marcel_2yr`, `marcel_1yr`, `league_avg`) rather than a hard switch to a single prior season.
+The CLI reports data quality in two layers:
+
+- **Run-wide data quality** — shared batting/pitching season availability and handedness split availability across the full Marcel window, including whether each source was fetched fresh, loaded from cache, or degraded out of the blend.
+- **Per-game data quality** — lineup confirmation vs roster fallback, starter provenance, bullpen fallback, park-factor provenance, placeholder weather, and player-level fallback notes for only the matchup being shown.
+
+Player source tags still reflect Marcel blend depth (`marcel_3yr`, `marcel_2yr`, `marcel_1yr`, `league_avg`).
 
 ## Methodology
 
@@ -118,24 +123,22 @@ After N simulations (default 10,000):
 
 | Source | Used for |
 |--------|----------|
-| `pybaseball` | Season batting/pitching leaderboards (overall stats), FanGraphs table parsers, and player-id lookup helpers |
-| `MLB-StatsAPI` | Today's schedule, confirmed lineups, roster |
-| `MLB People API` | Player handedness enrichment (FanGraphs `Bat` column is batting runs, not L/R/S) |
-| FanGraphs legacy API | Direct HTML split fetches for vs-LHP / vs-RHP / vs-LHB / vs-RHB rates |
+| MLB Stats API | Season batting/pitching leaderboards (overall stats and handedness `statSplits`), today's schedule, confirmed lineups, roster |
+| MLB People API | Player handedness enrichment for leaderboard rows |
 | Baseball Savant | Handedness-split park factors fetched at runtime and cached |
 | `mlb/data/park_factors.py` | Hardcoded 2025 fallback park factors when Savant data is unavailable |
 | `mlb/config.py` `LEAGUE_AVERAGES` | Last-resort fallback only; overwritten at runtime by fetched matchup rates |
 
-**League average fallback chain:** computed from current-season overall pybaseball leaderboards plus FanGraphs handedness split pages → `computed_league_averages-{season}.json` cache → hardcoded constants in `config.py` with a warning.
+**League average fallback chain:** computed from current-season MLB Stats API overall rows plus MLB Stats API handedness `statSplits` → `computed_league_averages-{season}.json` cache → hardcoded constants in `config.py` with a warning.
 
 **Player projection model:** batter and pitcher rates are Marcel-style 3-season regressions. Overall and split rates are blended from 2026, 2025, and 2024 with recency weights (`5/4/3`) scaled by sample size, then regressed toward a league baseline. Missing seasons naturally contribute zero weight. Completely unknown players still fall back to league-average rates.
 
 ### Current Data Flow
 
-- `pybaseball` provides overall season batting and pitching rows for each player.
+- MLB Stats API provides overall season batting and pitching rows for each player.
   - These overall rows are hand-agnostic.
 
-- FanGraphs legacy split pages provide handedness-specific rows.
+- MLB Stats API `statSplits` provides handedness-specific rows.
   - Batters: `vs LHP`, `vs RHP`
   - Pitchers: `vs LHB`, `vs RHB`
 
@@ -239,8 +242,9 @@ mlb/
     models.py            Typed dataclasses: BatterStats, PitcherStats, ParkFactors,
                          Weather, Lineup, GameContext, BaseState, GameState,
                          PAResult, SimulatedGame, SimulationResult, PlayerSimStats
-    cache.py             File-based JSON caching with TTL expiry
-    stats.py             pybaseball fetchers → BatterStats/PitcherStats builders
+    mlb_stats_api.py     Repo-local MLB Stats API client for overall + split leaderboards
+    stats.py             MLB Stats API fetchers → BatterStats/PitcherStats builders
+    team_codes.py        Shared team-name → stat-source code mapping
     lineups.py           MLB Stats API schedule, lineup, and roster fetchers
     park_factors.py      Hardcoded park-factor table + team→venue lookup
     weather.py           Neutral weather stub + indoor-park detection

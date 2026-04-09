@@ -19,7 +19,9 @@ tests/nba/                       pytest test suite
 mlb/                             MLB Monte Carlo simulation engine
   config.py                      Enums, league averages, season config, simulation defaults
   data/models.py                 Typed dataclasses for all MLB data structures
-  data/stats.py                  pybaseball fetchers + BatterStats/PitcherStats builders
+  data/mlb_stats_api.py          Repo-local MLB Stats API client for season + split leaderboards
+  data/stats.py                  MLB Stats API fetchers + BatterStats/PitcherStats builders
+  data/team_codes.py             Shared team-name → stat-source code mapping
   data/lineups.py                MLB Stats API schedule, lineup, and roster fetchers
   data/park_factors.py           Hardcoded park-factor table + team→venue lookup
   data/weather.py                Neutral weather stub + indoor-park detection
@@ -54,7 +56,7 @@ python nba/scripts/run_optimizer.py --target avg_miss --export
 python -m pytest tests/mlb/ -v
 
 # Install MLB data dependencies
-pip install pybaseball MLB-StatsAPI
+pip install MLB-StatsAPI
 
 # Run MLB CLI smoke test
 python -m mlb.scripts.test_smoke
@@ -110,18 +112,18 @@ Key files in the sibling repo for understanding the data:
 - **Switch hitters resolve opposite pitcher.** `resolve_batter_hand(S, R) → L`, `resolve_batter_hand(S, L) → R`.
 - **Park factors split by batter hand.** `ParkFactors.get_factors(hand)` returns the correct multiplier dict.
 - **BaseState is frozen.** Each PA produces a new BaseState; never mutate in place.
-- **MLB runtime depends on numpy plus data packages.** The engine still avoids web/service dependencies, but the CLI/data layer uses `pybaseball` and `MLB-StatsAPI`.
+- **MLB runtime depends on numpy plus data packages.** The engine still avoids web/service dependencies, but the CLI/data layer uses MLB Stats API for player stats, schedules, lineups, and rosters, plus Baseball Savant for park factors.
 - **numpy RNG threading.** All randomness flows through `np.random.Generator` parameters — no global state. Enables reproducible simulations via seed.
 - **Outcome-based pitch counting.** Pitches per PA vary by outcome: K/BB=5, OUT=4, hits=3, HBP=2. Defined in `PITCHES_PER_OUTCOME` in `mlb/config.py`.
 - **Extra-inning ghost runner.** 10th+ inning half-innings start with `BaseState(second=True)` per MLB rules (2020+).
 - **Mercy rule at 15 innings.** Games capped to prevent infinite loops in edge cases.
 - **Single aggregate bullpen arm.** Each team's bullpen is one `PitcherStats` built from team-level relief aggregate stats (GS==0 or GS/G<0.2). Individual reliever selection is a future enhancement.
 - **No GIDP in v1.** Ground-ball double plays not modeled; runners hold on generic outs (except sac fly).
-- **MLB data layer uses external sources.** `pybaseball` provides season stats; `MLB-StatsAPI` provides schedules, lineups, and rosters.
+- **MLB data layer uses external sources.** MLB Stats API provides season stats, splits, schedules, lineups, and rosters. Baseball Savant provides park factors.
 - **Lazy imports protect tests.** Data fetch modules import external packages only when fetch functions are called, so mocked tests run without live network usage.
-- **True handedness splits are resolved per PA.** `mlb/data/stats.py` fetches vs-LHP/vs-RHP batting splits and vs-LHB/vs-RHB pitching splits from FanGraphs leaderboards using month parameters (13=vs-left, 14=vs-right). Those split rows are Marcel-blended across up to three seasons. In the game engine, batters facing a starter use the handedness split matching the starter's throwing hand; batters facing the aggregate bullpen arm use their overall rates instead of a platoon split. Pitchers always use their handedness-allowed split based on the batter's effective side (switch hitters bat opposite the pitcher). If split rows are unavailable, selection falls back to the player's overall projected rates.
-- **Name matching is v1 identity resolution.** pybaseball and MLB Stats API players are matched by normalized player name for now; no persistent ID map yet. The canonical normalizer is `normalize_name` in `mlb/utils/normalize.py` — imported everywhere, no local copies. Steps: strip Unicode accents (Agustín → agustin), remove periods from initials (J.C. → JC), drop trailing suffixes (Jr./Sr./II/III/IV).
-- **Name lookup failures log a warning with the normalized form.** When a player lookup falls back to league average, `builder.py` logs: `No stats found for "<raw name>" (normalized: "<key>") — using league average`. This makes it easy to diagnose FanGraphs vs MLB API name mismatches.
+- **True handedness splits are resolved per PA.** `mlb/data/stats.py` fetches vs-LHP/vs-RHP batting splits and vs-LHB/vs-RHB pitching splits from MLB Stats API `statSplits`, Marcel-blends those rows across up to three seasons, and selects the correct split at simulation time. Batters facing the aggregate bullpen arm use their overall rates instead of a platoon split. Pitchers always use their handedness-allowed split based on the batter's effective side (switch hitters bat opposite the pitcher). If split rows are unavailable, selection falls back to the player's overall projected rates.
+- **Name matching is still normalized-name based.** League-wide stat rows and lineup/roster names are matched by the canonical normalizer in `mlb/utils/normalize.py`; there is still no persistent cross-source ID map.
+- **Name lookup failures log the normalized form.** When a player lookup falls back to league average, `builder.py` logs: `No stats found for "<raw name>" (normalized: "<key>") — using league average`. This is the first thing to inspect when a lineup name does not resolve into the shared stat pool.
 - **Player source tags are Marcel-based.** Merged player dicts carry `source` values of `"marcel_3yr"` (all three seasons contributed), `"marcel_2yr"`, `"marcel_1yr"`, or `"league_avg"` (no real data at all). The prior `2026_split` / `2026_overall` / `2025_overall` tags are retired. Raw per-season rows on disk still carry `"{season}_overall"` and `"{season}_split"` tags; only the merged player dict seen downstream uses Marcel tags.
 - **Marcel regression is the projection model for batter and pitcher rates.** For any rate stat, `marcel_blend()` computes: `projected = (w1*r2026 + w2*r2025 + w3*r2024 + w_lg*league_avg) / (w1+w2+w3+w_lg)` where year weights are scaled by sample size: `w1 = 5*(PA_2026/200)`, `w2 = 4*(PA_2025/200)`, `w3 = 3*(PA_2024/200)`. Missing seasons have weight 0. The regression weight per stat is `regression_constant/200` (batters) or `regression_constant/150` (pitchers). Batter per-stat regression constants (Tango's values, in PA equivalents): BB%=200, K%=150, HR%=320, 1B%=200, 2B%=400, 3B%=800, HBP%=400. Pitchers use a single constant of 150 BF for all rate stats (v1). OUT% is derived as `1 − sum(other rates)`. Overall projections regress toward the true PA-weighted overall league average from `computed_league_averages-{season}.json`; falls back to the equal-weight average of the four matchup entries if that cache is unavailable.
 - **Split projections use a two-step overall-baseline approach.** Split rates (vs-LHP/vs-RHP for batters, vs-LHB/vs-RHB for pitchers) are anchored to the overall Marcel rather than computed fully independently. Step 1: compute overall Marcel projection (the player's true talent estimate). Step 2: for each split bucket, Marcel-blend per-season ratios (`split_rate[stat] / overall_rate[stat]`) toward 1.0 (the neutral, no-platoon-effect target) using halved regression constants. Step 3: apply `projected_split_rate = overall_rate * blended_ratio`. A player with rich split history (300+ PA per split) gets a ratio that reflects their observed platoon split; a player with thin split history (e.g. 30 PA vs LHP) has the ratio regress heavily toward 1.0, keeping the projected split close to overall talent rather than drifting toward a noisy matchup average. Batter ratio regression constants (PA equivalents, half of the full Marcel constants): BB%=100, K%=75, HR%=160, 1B%=100, 2B%=200, 3B%=400, HBP%=200. Pitchers use a single ratio constant of 75 BF.
@@ -140,21 +142,19 @@ Key files in the sibling repo for understanding the data:
 - **Synthetic smoke coverage is the fast end-to-end check.** `python -m mlb.scripts.test_smoke` validates the full pipeline without network access.
 - **Calibration bug fixed in inning state.** Non-out events must preserve the current out count; resetting outs to zero made half-innings continue until three consecutive outs and inflated scoring to ~26 runs/game.
 - **League-average neutral check is now the calibration baseline.** `python -m mlb.scripts.diagnose_calibration` should land around 7.5-9.5 total runs/game, ~70-80 PAs, and ~54 outs. Early-season data can push total runs toward the low end of this range.
-- **pybaseball is called with qual=1.** `batting_stats(season, qual=1)` and `pitching_stats(season, qual=1)` return all players with any PA/IP. The FanGraphs qualified-leaderboard default would silently drop most of the league. Marcel regression weights all players continuously by sample size — no per-player threshold filtering.
-- **pybaseball K%/BB% are already decimals.** `batting_stats()` and `pitching_stats()` return `K%` and `BB%` as decimals (e.g. 0.182), not percentages (18.2). Do not divide by 100.
-- **FanGraphs leaderboard `Bat` is not batter handedness.** In pybaseball/FanGraphs batting tables, `Bat` is batting runs, not L/R/S. `stats.py` enriches cached player rows with real handedness from MLB's people API keyed off Fangraphs IDs.
-- **Stats load errors propagate.** `load_schedule_and_stats` in the CLI does not swallow fetch exceptions — if pybaseball or MLB-StatsAPI fails, the error surfaces rather than silently producing all-league-average output.
+- **Stats API rows are normalized into the old internal stat shape.** `mlb/data/mlb_stats_api.py` maps official field names into the internal `PA/BF/H/2B/3B/HR/BB/HBP/SO` shape, parses baseball innings notation (`115.1` = 115 1/3), and carries `G/GS` so bullpen aggregation still filters relievers correctly.
+- **Stats load errors propagate.** `load_schedule_and_stats` in the CLI does not swallow fetch exceptions — if MLB Stats API or Savant fails in a required path, the error surfaces rather than silently producing all-league-average output.
 - **PitcherSimStats extends PlayerSimStats for prop markets.** `aggregate.py` tracks pitcher outs/K/ER per simulation and computes IP, 5+K%, and QS% alongside the base fields. The formatter uses these directly; do not recompute from raw `pa_results`.
 - **Pitcher display uses prop-market columns.** The player projections panel shows IP, K, 5+K%, ER, QS% — not rate stats like K/9 or ERA. This matches how sportsbooks present pitcher props.
 - **Probable pitchers always override boxscore.** `fetch_todays_games()` captures `away_probable_pitcher` / `home_probable_pitcher` from the schedule API. `_resolve_lineup()` injects these into the lineup regardless of what the boxscore pitcher field says — the boxscore pre-game pitcher entries are unreliable (may list warmup/administrative arms, not the actual starter). Falls back to first roster arm only when the probable field is empty and there is no boxscore.
 - **Runtime league averages are preloaded once per CLI run.** Shared season-wide data is resolved before per-game context assembly. Runtime matchup league averages prefer a valid computed cache, then fresh recomputation, then stale computed cache, then hardcoded fallback constants in `config.py`.
 - **Park factors: Savant → hardcoded → neutral fallback chain.** `fetch_park_factors(season)` makes two requests to Baseball Savant (`batSide=L` and `batSide=R`) to get handedness-specific park factors, then caches both sides together in `park_factors-{season}.json`. If one side request fails, falls back to the combined ("All") endpoint for that side. If all Savant requests fail, falls back to the hardcoded `PARK_FACTORS` table. Early in a season, Savant only has data for venues used so far; `get_park_factors(venue)` checks the hardcoded table before returning neutral 1.0. We now normalize known Savant venue aliases like `UNIQLO Field at Dodger Stadium` → `Dodger Stadium` and `loanDepot park` → `loanDepot Park`.
-- **`requests` and `beautifulsoup4` are top-level imports in `park_factors.py` and `stats.py`.** Unlike pybaseball, these are not lazy-imported. Both are listed in `requirements.txt` and are expected to be installed.
+- **`requests` and `beautifulsoup4` are active runtime dependencies in the MLB data layer.** `mlb/data/mlb_stats_api.py` and `mlb/data/park_factors.py` use `requests`, and `beautifulsoup4` is imported in `park_factors.py` for Baseball Savant HTML parsing.
 - **Roster handedness comes from `person` hydration, not entry level.** `fetch_team_roster` requests `hydrate=person` so `batSide` and `pitchHand` are under `person`, not under the roster entry directly. The old entry-level lookup always returned `None` → defaulted to "R".
 
 ## MLB Caching
 
-Only slow pybaseball scrapes are cached. Schedule, lineup, and roster data is always fetched fresh.
+Only slow season-stat and park-factor fetches are cached. Schedule, lineup, and roster data is always fetched fresh.
 
 ```
 baseball_cache/
@@ -179,11 +179,10 @@ baseball_cache/
   computed_league_averages-2026.json  ← overall + matchup league averages, same TTL as current-season stats
   park_factors-2025.json          ← Baseball Savant park factors for prior season, kept forever
   park_factors-2026.json          ← current season Savant park factors, no TTL (delete to refresh)
-  pybaseball/                     ← pybaseball's own HTTP/DataFrame cache
 ```
 
 **TTL logic:** `STATS_CACHE_MAX_AGE_HOURS = 6` in `mlb/config.py`. Files for seasons prior to `SEASON` never expire. Current-season raw stat files (batting, pitching, all split variants, and computed league averages) are age-checked; prior seasons are kept forever. Park factor cache files have no TTL — delete to force a fresh Savant fetch. Two-prior season (2024) files follow the same never-expire rule as prior-season (2025) files.
 
 **No merged/intermediate cache.** `fetch_batting_splits` and `fetch_pitching_splits` merge current + prior season data on every call (takes milliseconds). Raw overall and split files are cached separately; merging is lazy and fast.
 
-**Cache invalidation:** Delete any of the raw stat files to force a fresh pybaseball scrape (overall or split variants). Delete `computed_league_averages-{season}.json` to force a fresh league-average recompute. Delete `park_factors-{season}.json` to force a fresh Savant fetch. Delete `baseball_cache/pybaseball/` to force pybaseball to re-download from FanGraphs.
+**Cache invalidation:** Delete any of the raw stat files to force a fresh MLB Stats API fetch (overall or split variants). Delete `computed_league_averages-{season}.json` to force a fresh league-average recompute. Delete `park_factors-{season}.json` to force a fresh Savant fetch.

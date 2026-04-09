@@ -6,5 +6,4 @@ beautifulsoup4
 rich
 pytest
 optuna
-pybaseball
 MLB-StatsAPI
