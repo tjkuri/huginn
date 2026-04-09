@@ -18,7 +18,12 @@ from mlb.config import (
     SEASON,
     STATS_CACHE_MAX_AGE_HOURS,
 )
-from mlb.data.mlb_stats_api import fetch_batting_season_rows, fetch_batting_split_rows, fetch_pitching_season_rows
+from mlb.data.mlb_stats_api import (
+    fetch_batting_season_rows,
+    fetch_batting_split_rows,
+    fetch_pitching_season_rows,
+    fetch_pitching_split_rows,
+)
 from mlb.data.models import BatterStats, DataSourceStatus, PitcherStats
 from mlb.data.team_codes import TEAM_TO_CODE as _TEAM_TO_FG_CODE
 from mlb.utils.normalize import normalize_name as _normalize_name
@@ -26,8 +31,14 @@ from mlb.utils.normalize import normalize_name as _normalize_name
 logger = logging.getLogger(__name__)
 
 _AVG_PITCHES_PER_INNING = 16.0
-_SPLIT_MONTH_VS_LEFT = 13
-_SPLIT_MONTH_VS_RIGHT = 14
+_BATTING_SPLIT_SIT_CODES = {
+    "vs_lhp": "vl",
+    "vs_rhp": "vr",
+}
+_PITCHING_SPLIT_SIT_CODES = {
+    "vs_lhb": "vl",
+    "vs_rhb": "vr",
+}
 _BATTER_REGRESSION_CONSTANTS: dict[str, float] = {
     "BB": 200.0,
     "K": 150.0,
@@ -51,16 +62,7 @@ _PITCHER_REGRESSION_CONSTANT = 150.0
 _PITCHER_RATIO_REGRESSION_CONSTANT = 75.0
 _BATTER_NORMALIZER = 200.0
 _PITCHER_NORMALIZER = 150.0
-_FANGRAPHS_LEGACY_URL = "https://www.fangraphs.com/leaders-legacy.aspx"
-_FANGRAPHS_PAGE_SIZE = 30
 _MLB_PEOPLE_URL = "https://statsapi.mlb.com/api/v1/people"
-_FANGRAPHS_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
-    ),
-    "Referer": "https://www.fangraphs.com/",
-}
 
 _TEAM_BULLPEN_CACHE: dict[tuple[int, bool], dict[str, dict[str, Any]]] = {}
 _COMPUTED_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[str, float]] = {}
@@ -1119,94 +1121,8 @@ def _fetch_pitching_season_raw_with_status(
     return players, source_tier
 
 
-def _fangraphs_split_query_params(
-    *,
-    stats: str,
-    season: int,
-    split_month: int,
-    page: int,
-) -> dict[str, Any]:
-    return {
-        "pos": "all",
-        "stats": stats,
-        "lg": "all",
-        "qual": 1,
-        "type": 0,
-        "season": season,
-        "month": split_month,
-        "season1": season,
-        "ind": 0,
-        "team": 0,
-        "rost": 0,
-        "age": 0,
-        "filter": "",
-        "players": 0,
-        "startdate": "",
-        "enddate": "",
-        "page": f"{page}_{_FANGRAPHS_PAGE_SIZE}",
-    }
-
-
-def _extract_total_pages_from_fangraphs_html(html: str) -> int:
-    pages = [int(match) for match in re.findall(r"page=(\d+)_30", html)]
-    return max(pages, default=1)
-
-
-def _fetch_fangraphs_split_frame(
-    season: int,
-    split_month: int,
-    *,
-    stats: str,
-) -> Any:
-    if stats == "bat":
-        from pybaseball.datasources.fangraphs import FangraphsBattingStatsTable
-
-        table = FangraphsBattingStatsTable()
-    else:
-        from pybaseball.datasources.fangraphs import FangraphsPitchingStatsTable
-
-        table = FangraphsPitchingStatsTable()
-
-    all_frames = []
-    total_pages = 1
-    page = 1
-    while page <= total_pages:
-        response = requests.get(
-            _FANGRAPHS_LEGACY_URL,
-            params=_fangraphs_split_query_params(
-                stats=stats,
-                season=season,
-                split_month=split_month,
-                page=page,
-            ),
-            headers=_FANGRAPHS_HEADERS,
-            timeout=20,
-        )
-        response.raise_for_status()
-        if page == 1:
-            total_pages = _extract_total_pages_from_fangraphs_html(response.text)
-        frame = table.html_accessor.get_tabular_data_from_html(
-            response.content,
-            column_name_mapper=table.COLUMN_NAME_MAPPER,
-            known_percentages=table.KNOWN_PERCENTAGES,
-            row_id_func=table.ROW_ID_FUNC,
-            row_id_name=table.ROW_ID_NAME,
-        )
-        if not frame.empty:
-            all_frames.append(frame)
-        page += 1
-
-    if not all_frames:
-        raise ValueError(f"Fangraphs returned no split rows for {stats} season={season} month={split_month}")
-
-    import pandas as pd
-
-    return pd.concat(all_frames, ignore_index=True).drop_duplicates(subset=["IDfg"], keep="first")
-
-
 def _fetch_batting_split_raw(
     season: int,
-    split_month: int,
     use_cache: bool,
     *,
     kind: str,
@@ -1214,7 +1130,6 @@ def _fetch_batting_split_raw(
 ) -> dict[str, dict]:
     players, _ = _fetch_batting_split_raw_with_status(
         season,
-        split_month,
         use_cache,
         kind=kind,
         split_type=split_type,
@@ -1224,7 +1139,6 @@ def _fetch_batting_split_raw(
 
 def _fetch_batting_split_raw_with_status(
     season: int,
-    split_month: int,
     use_cache: bool,
     *,
     kind: str,
@@ -1235,12 +1149,9 @@ def _fetch_batting_split_raw_with_status(
         if cached is not None:
             return _enrich_batter_handedness(cached, season, kind), "cache"
 
-    if split_month == _SPLIT_MONTH_VS_LEFT:
-        sit_code = "vl"
-    elif split_month == _SPLIT_MONTH_VS_RIGHT:
-        sit_code = "vr"
-    else:
-        raise ValueError(f"Unsupported batting split month: {split_month}")
+    sit_code = _BATTING_SPLIT_SIT_CODES.get(split_type)
+    if sit_code is None:
+        raise ValueError(f"Unsupported batting split type: {split_type}")
     records = fetch_batting_split_rows(season, sit_code=sit_code)
     players = _build_batting_players_from_records(records, season, split_type=split_type)
 
@@ -1251,7 +1162,6 @@ def _fetch_batting_split_raw_with_status(
 
 def _fetch_pitching_split_raw(
     season: int,
-    split_month: int,
     use_cache: bool,
     *,
     kind: str,
@@ -1259,7 +1169,6 @@ def _fetch_pitching_split_raw(
 ) -> dict[str, dict]:
     players, _ = _fetch_pitching_split_raw_with_status(
         season,
-        split_month,
         use_cache,
         kind=kind,
         split_type=split_type,
@@ -1269,7 +1178,6 @@ def _fetch_pitching_split_raw(
 
 def _fetch_pitching_split_raw_with_status(
     season: int,
-    split_month: int,
     use_cache: bool,
     *,
     kind: str,
@@ -1280,16 +1188,14 @@ def _fetch_pitching_split_raw_with_status(
         if cached is not None:
             return _enrich_pitcher_handedness(cached, season, kind), "cache"
 
-    frame = _fetch_fangraphs_split_frame(season, split_month, stats="pit")
-    players: dict[str, dict] = {}
-    for row in _frame_to_records(frame):
-        player = _build_pitcher_player(row, season, source=f"{season}_split", split_type=split_type)
-        if player is None:
-            continue
-        players[_normalize_name(player["name"])] = player
+    sit_code = _PITCHING_SPLIT_SIT_CODES.get(split_type)
+    if sit_code is None:
+        raise ValueError(f"Unsupported pitching split type: {split_type}")
+    records = fetch_pitching_split_rows(season, sit_code=sit_code)
+    players = _build_pitching_players_from_records(records, season, split_type=split_type)
 
     players = _enrich_pitcher_handedness(players, season, kind)
-    _save_raw_cache(kind, season, players)
+    _save_raw_cache(kind, season, players, records=records)
     return players, "fresh"
 
 
@@ -1378,7 +1284,7 @@ def _load_overall_seasons(
 
 
 def _load_split_seasons(
-    split_fetches: list[tuple[int, int, str, str]],
+    split_fetches: list[tuple[int, str, str]],
     fetch_split_raw,
     use_cache: bool,
     *,
@@ -1388,12 +1294,11 @@ def _load_split_seasons(
 ) -> dict[tuple[int, str], dict[str, dict]]:
     """Fetch split seasons independently so one 403 does not discard all splits."""
     split_results: dict[tuple[int, str], dict[str, dict]] = {}
-    for target_season, split_month, kind, split_type in split_fetches:
+    for target_season, kind, split_type in split_fetches:
         source_name = f"{source_prefix}_{split_type}_{target_season}"
         try:
             players, source_tier = fetch_split_raw(
                 target_season,
-                split_month,
                 use_cache,
                 kind=kind,
                 split_type=split_type,
@@ -1458,12 +1363,12 @@ def fetch_batting_splits_with_statuses(
 
     split_results = _load_split_seasons(
         [
-            (season, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
-            (season - 1, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
-            (season - 2, _SPLIT_MONTH_VS_LEFT, "batting_vs_lhp", "vs_lhp"),
-            (season, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
-            (season - 1, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
-            (season - 2, _SPLIT_MONTH_VS_RIGHT, "batting_vs_rhp", "vs_rhp"),
+            (season, "batting_vs_lhp", "vs_lhp"),
+            (season - 1, "batting_vs_lhp", "vs_lhp"),
+            (season - 2, "batting_vs_lhp", "vs_lhp"),
+            (season, "batting_vs_rhp", "vs_rhp"),
+            (season - 1, "batting_vs_rhp", "vs_rhp"),
+            (season - 2, "batting_vs_rhp", "vs_rhp"),
         ],
         _fetch_batting_split_raw_with_status,
         use_cache,
@@ -1528,12 +1433,12 @@ def fetch_pitching_splits_with_statuses(
 
     split_results = _load_split_seasons(
         [
-            (season, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
-            (season - 1, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
-            (season - 2, _SPLIT_MONTH_VS_LEFT, "pitching_vs_lhb", "vs_lhb"),
-            (season, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
-            (season - 1, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
-            (season - 2, _SPLIT_MONTH_VS_RIGHT, "pitching_vs_rhb", "vs_rhb"),
+            (season, "pitching_vs_lhb", "vs_lhb"),
+            (season - 1, "pitching_vs_lhb", "vs_lhb"),
+            (season - 2, "pitching_vs_lhb", "vs_lhb"),
+            (season, "pitching_vs_rhb", "vs_rhb"),
+            (season - 1, "pitching_vs_rhb", "vs_rhb"),
+            (season - 2, "pitching_vs_rhb", "vs_rhb"),
         ],
         _fetch_pitching_split_raw_with_status,
         use_cache,
@@ -1665,14 +1570,12 @@ def fetch_computed_league_averages(season: int = SEASON, use_cache: bool = True)
     overall_batters, _ = _fetch_batting_season_raw_with_status(season, use_cache, records=batting_df)
     vs_lhp_batters = _fetch_batting_split_raw(
         season,
-        _SPLIT_MONTH_VS_LEFT,
         use_cache,
         kind="batting_vs_lhp",
         split_type="vs_lhp",
     )
     vs_rhp_batters = _fetch_batting_split_raw(
         season,
-        _SPLIT_MONTH_VS_RIGHT,
         use_cache,
         kind="batting_vs_rhp",
         split_type="vs_rhp",
