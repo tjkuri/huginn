@@ -1,5 +1,4 @@
-"""Diagnostic: show what probable pitcher data statsapi.schedule() returns vs what
-the current code assigns as starting pitchers.
+"""Diagnostic: inspect probable-pitcher data and the current starter resolution path.
 
 Usage:
     python -m mlb.scripts.diagnose_pitchers [--date YYYY-MM-DD]
@@ -107,8 +106,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\n{'='*70}")
     print("DIAGNOSIS COMPLETE")
-    print("If 'away_probable_pitcher' fields are missing from game_info above,")
-    print("that confirms the bug: fetch_todays_games() discards probable pitcher data.")
+    print("Use the sections above to compare:")
+    print("- raw schedule probable-pitcher fields")
+    print("- the normalized fetch_todays_games() payload")
+    print("- confirmed-lineup vs roster-fallback starter assignment")
     print(f"{'='*70}\n")
     return 0
 
