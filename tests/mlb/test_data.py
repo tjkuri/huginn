@@ -5,7 +5,7 @@ import pytest
 
 from mlb.config import Hand
 from mlb.data.builder import RunPreload, build_game_context, preload_run_context
-from mlb.data.mlb_stats_api import fetch_pitching_season_rows, parse_baseball_innings
+from mlb.data.mlb_stats_api import fetch_batting_split_rows, fetch_pitching_season_rows, parse_baseball_innings
 from mlb.data.models import DataSourceStatus, GameContext, ParkFactors
 from mlb.data.park_factors import (
     _convert_savant_index_to_multiplier,
@@ -325,6 +325,68 @@ class TestMlbStatsApiClient:
         assert row["2B"] == 20
         assert row["3B"] == 3
         assert row["HBP"] == 5
+
+    def test_fetch_batting_split_rows_maps_vs_right_split(self, monkeypatch):
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return self._payload
+
+        def fake_get(url, params=None, timeout=None):
+            if "api/v1/stats" in url:
+                assert params["sitCodes"] == "vr"
+                return FakeResponse(
+                    {
+                        "stats": [
+                            {
+                                "totalSplits": 1,
+                                "splits": [
+                                    {
+                                        "player": {"id": 456, "fullName": "Sample Batter"},
+                                        "team": {"name": "Boston Red Sox"},
+                                        "stat": {
+                                            "plateAppearances": 120,
+                                            "hits": 30,
+                                            "doubles": 6,
+                                            "triples": 1,
+                                            "homeRuns": 4,
+                                            "hitByPitch": 2,
+                                            "strikeOuts": 20,
+                                            "baseOnBalls": 10,
+                                        },
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                )
+            return FakeResponse({"people": [{"id": 456, "pitchHand": {"code": "R"}, "batSide": {"code": "L"}}]})
+
+        monkeypatch.setattr("mlb.data.mlb_stats_api.requests.get", fake_get)
+
+        rows = fetch_batting_split_rows(2026, sit_code="vr")
+
+        assert rows == [
+            {
+                "ID": "456",
+                "Name": "Sample Batter",
+                "Team": "BOS",
+                "Bats": "L",
+                "PA": 120,
+                "H": 30,
+                "2B": 6,
+                "3B": 1,
+                "HR": 4,
+                "HBP": 2,
+                "SO": 20,
+                "BB": 10,
+            }
+        ]
 
     def test_bullpen_aggregation_uses_games_started_filter(self, monkeypatch):
         import mlb.data.stats as stats_mod
@@ -777,6 +839,54 @@ class TestFetchBattingSplits:
         result = stats_mod._fetch_batting_season_raw(2025, use_cache=True)
         assert scrape_count["n"] == 1
         assert "cached batter" in result
+
+    def test_batting_split_raw_uses_statsapi_hand_mapping(self, monkeypatch):
+        import mlb.data.stats as stats_mod
+
+        seen_codes: list[str] = []
+        monkeypatch.setattr(stats_mod, "_load_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr(stats_mod, "_save_raw_cache", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            stats_mod,
+            "fetch_batting_split_rows",
+            lambda season, sit_code: seen_codes.append(sit_code) or [
+                {
+                    "ID": "1",
+                    "Name": "Split Batter",
+                    "Team": "ABC",
+                    "Bats": "L",
+                    "PA": 80,
+                    "H": 20,
+                    "2B": 5,
+                    "3B": 1,
+                    "HR": 3,
+                    "HBP": 1,
+                    "SO": 12,
+                    "BB": 7,
+                }
+            ],
+        )
+
+        players_lhp, tier_lhp = stats_mod._fetch_batting_split_raw_with_status(
+            2026,
+            stats_mod._SPLIT_MONTH_VS_LEFT,
+            False,
+            kind="batting_vs_lhp",
+            split_type="vs_lhp",
+        )
+        players_rhp, tier_rhp = stats_mod._fetch_batting_split_raw_with_status(
+            2026,
+            stats_mod._SPLIT_MONTH_VS_RIGHT,
+            False,
+            kind="batting_vs_rhp",
+            split_type="vs_rhp",
+        )
+
+        assert seen_codes == ["vl", "vr"]
+        assert tier_lhp == "fresh"
+        assert tier_rhp == "fresh"
+        assert "split batter" in players_lhp
+        assert "split batter" in players_rhp
 
     def test_overall_fetch_failure_degrades_to_prior_season(self, monkeypatch):
         rows_2025 = [

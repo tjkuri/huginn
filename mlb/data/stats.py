@@ -18,7 +18,7 @@ from mlb.config import (
     SEASON,
     STATS_CACHE_MAX_AGE_HOURS,
 )
-from mlb.data.mlb_stats_api import fetch_batting_season_rows, fetch_pitching_season_rows
+from mlb.data.mlb_stats_api import fetch_batting_season_rows, fetch_batting_split_rows, fetch_pitching_season_rows
 from mlb.data.models import BatterStats, DataSourceStatus, PitcherStats
 from mlb.data.team_codes import TEAM_TO_CODE as _TEAM_TO_FG_CODE
 from mlb.utils.normalize import normalize_name as _normalize_name
@@ -1235,16 +1235,17 @@ def _fetch_batting_split_raw_with_status(
         if cached is not None:
             return _enrich_batter_handedness(cached, season, kind), "cache"
 
-    frame = _fetch_fangraphs_split_frame(season, split_month, stats="bat")
-    players: dict[str, dict] = {}
-    for row in _frame_to_records(frame):
-        player = _build_batter_player(row, season, source=f"{season}_split", split_type=split_type)
-        if player is None:
-            continue
-        players[_normalize_name(player["name"])] = player
+    if split_month == _SPLIT_MONTH_VS_LEFT:
+        sit_code = "vl"
+    elif split_month == _SPLIT_MONTH_VS_RIGHT:
+        sit_code = "vr"
+    else:
+        raise ValueError(f"Unsupported batting split month: {split_month}")
+    records = fetch_batting_split_rows(season, sit_code=sit_code)
+    players = _build_batting_players_from_records(records, season, split_type=split_type)
 
     players = _enrich_batter_handedness(players, season, kind)
-    _save_raw_cache(kind, season, players)
+    _save_raw_cache(kind, season, players, records=records)
     return players, "fresh"
 
 

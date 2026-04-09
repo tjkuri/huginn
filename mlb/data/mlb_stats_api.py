@@ -123,6 +123,41 @@ def fetch_batting_season_rows(season: int) -> list[dict[str, Any]]:
     return normalized_rows
 
 
+def fetch_batting_split_rows(season: int, *, sit_code: str) -> list[dict[str, Any]]:
+    rows = _fetch_all_splits(season=season, group="hitting", stats_type="statSplits", sit_code=sit_code)
+    person_ids = sorted(
+        {
+            int(str((row.get("player") or {}).get("id") or "").strip())
+            for row in rows
+            if str((row.get("player") or {}).get("id") or "").strip().isdigit()
+        }
+    )
+    handedness = _fetch_people_handedness(person_ids)
+
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        player = row.get("player") or {}
+        stat = row.get("stat") or {}
+        player_id = str(player.get("id") or "").strip()
+        normalized_rows.append(
+            {
+                "ID": player_id,
+                "Name": str(player.get("fullName") or "").strip(),
+                "Team": _extract_team_code(row),
+                "Bats": str((handedness.get(player_id) or {}).get("bats") or "R").upper(),
+                "PA": stat.get("plateAppearances", 0),
+                "H": stat.get("hits", 0),
+                "2B": stat.get("doubles", 0),
+                "3B": stat.get("triples", 0),
+                "HR": stat.get("homeRuns", 0),
+                "HBP": _coerce_hbp(stat),
+                "SO": stat.get("strikeOuts", 0),
+                "BB": stat.get("baseOnBalls", 0),
+            }
+        )
+    return normalized_rows
+
+
 def fetch_pitching_season_rows(season: int) -> list[dict[str, Any]]:
     rows = _fetch_all_splits(season=season, group="pitching", stats_type="season")
     person_ids = sorted(
