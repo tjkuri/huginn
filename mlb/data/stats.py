@@ -18,7 +18,9 @@ from mlb.config import (
     SEASON,
     STATS_CACHE_MAX_AGE_HOURS,
 )
+from mlb.data.mlb_stats_api import fetch_batting_season_rows, fetch_pitching_season_rows
 from mlb.data.models import BatterStats, DataSourceStatus, PitcherStats
+from mlb.data.team_codes import TEAM_TO_CODE as _TEAM_TO_FG_CODE
 from mlb.utils.normalize import normalize_name as _normalize_name
 
 logger = logging.getLogger(__name__)
@@ -64,47 +66,13 @@ _TEAM_BULLPEN_CACHE: dict[tuple[int, bool], dict[str, dict[str, Any]]] = {}
 _COMPUTED_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[str, float]] = {}
 _MATCHUP_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[tuple[Hand, Hand], dict[str, float]]] = {}
 _PLAYER_HANDEDNESS_CACHE: dict[str, dict[str, str]] = {}
-_TEAM_TO_FG_CODE = {
-    "Arizona Diamondbacks": "ARI",
-    "Athletics": "ATH",
-    "Atlanta Braves": "ATL",
-    "Baltimore Orioles": "BAL",
-    "Boston Red Sox": "BOS",
-    "Chicago Cubs": "CHC",
-    "Chicago White Sox": "CHW",
-    "Cincinnati Reds": "CIN",
-    "Cleveland Guardians": "CLE",
-    "Colorado Rockies": "COL",
-    "Detroit Tigers": "DET",
-    "Houston Astros": "HOU",
-    "Kansas City Royals": "KCR",
-    "Los Angeles Angels": "LAA",
-    "Los Angeles Dodgers": "LAD",
-    "Miami Marlins": "MIA",
-    "Milwaukee Brewers": "MIL",
-    "Minnesota Twins": "MIN",
-    "New York Mets": "NYM",
-    "New York Yankees": "NYY",
-    "Philadelphia Phillies": "PHI",
-    "Pittsburgh Pirates": "PIT",
-    "San Diego Padres": "SDP",
-    "San Francisco Giants": "SFG",
-    "Seattle Mariners": "SEA",
-    "St. Louis Cardinals": "STL",
-    "Tampa Bay Rays": "TBR",
-    "Texas Rangers": "TEX",
-    "Toronto Blue Jays": "TOR",
-    "Washington Nationals": "WSN",
-}
-
-
 # ── Raw season stat cache (flat files, no subdirectories) ────────────────────
 
 def _raw_cache_path(kind: str, season: int) -> Path:
     return CACHE_DIR / f"raw_{kind}-{season}.json"
 
 
-def _load_raw_cache(kind: str, season: int) -> dict[str, dict] | None:
+def _load_raw_cache_payload(kind: str, season: int) -> dict[str, Any] | None:
     path = _raw_cache_path(kind, season)
     if not path.exists():
         return None
@@ -116,14 +84,38 @@ def _load_raw_cache(kind: str, season: int) -> dict[str, dict] | None:
             logger.debug("Raw %s cache for %d is %.1fh old, re-fetching", kind, season, age_hours)
             return None
     with open(path) as f:
-        return json.load(f).get("players")
+        return json.load(f)
 
 
-def _save_raw_cache(kind: str, season: int, players: dict[str, dict]) -> None:
+def _load_raw_cache(kind: str, season: int) -> dict[str, dict] | None:
+    payload = _load_raw_cache_payload(kind, season)
+    if payload is None:
+        return None
+    return payload.get("players")
+
+
+def _load_raw_records_cache(kind: str, season: int) -> list[dict[str, Any]] | None:
+    payload = _load_raw_cache_payload(kind, season)
+    if payload is None:
+        return None
+    records = payload.get("records")
+    return records if isinstance(records, list) else None
+
+
+def _save_raw_cache(
+    kind: str,
+    season: int,
+    players: dict[str, dict],
+    *,
+    records: list[dict[str, Any]] | None = None,
+) -> None:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = _raw_cache_path(kind, season)
+    payload: dict[str, Any] = {"players": players}
+    if records is not None:
+        payload["records"] = records
     with open(path, "w") as f:
-        json.dump({"players": players}, f, indent=2)
+        json.dump(payload, f, indent=2)
     logger.debug("Raw cache written: %s (%d players)", path, len(players))
 
 
@@ -717,6 +709,8 @@ def _enrich_pitcher_handedness(players: dict[str, dict], season: int, kind: str)
 
 
 def _frame_to_records(frame: Any) -> list[dict[str, Any]]:
+    if isinstance(frame, list):
+        return frame
     if hasattr(frame, "to_dict"):
         return frame.to_dict(orient="records")
     raise TypeError("Expected pandas DataFrame-like object with to_dict()")
@@ -985,44 +979,38 @@ def _aggregate_team_bullpen_records(records: list[dict[str, Any]], season: int) 
     return bullpen
 
 
-def _fetch_batting_season_raw(
+def _fetch_batting_season_records_with_status(
     season: int,
-    batting_stats,
     use_cache: bool,
     *,
     kind: str = "batting",
-    month: int | None = None,
-    split_type: str = "overall",
-) -> dict[str, dict]:
-    players, _ = _fetch_batting_season_raw_with_status(
-        season,
-        batting_stats,
-        use_cache,
-        kind=kind,
-        month=month,
-        split_type=split_type,
-    )
-    return players
-
-
-def _fetch_batting_season_raw_with_status(
-    season: int,
-    batting_stats,
-    use_cache: bool,
-    *,
-    kind: str = "batting",
-    month: int | None = None,
-    split_type: str = "overall",
-) -> tuple[dict[str, dict], str]:
+) -> tuple[list[dict[str, Any]], str]:
     if use_cache:
-        cached = _load_raw_cache(kind, season)
-        if cached is not None:
-            return _enrich_batter_handedness(cached, season, kind), "cache"
+        cached_records = _load_raw_records_cache(kind, season)
+        if cached_records is not None:
+            return cached_records, "cache"
+    return fetch_batting_season_rows(season), "fresh"
 
-    fetch_kwargs: dict[str, Any] = {"qual": 1}
-    if month is not None:
-        fetch_kwargs["month"] = month
-    records = _frame_to_records(batting_stats(season, **fetch_kwargs))
+
+def _fetch_pitching_season_records_with_status(
+    season: int,
+    use_cache: bool,
+    *,
+    kind: str = "pitching",
+) -> tuple[list[dict[str, Any]], str]:
+    if use_cache:
+        cached_records = _load_raw_records_cache(kind, season)
+        if cached_records is not None:
+            return cached_records, "cache"
+    return fetch_pitching_season_rows(season), "fresh"
+
+
+def _build_batting_players_from_records(
+    records: list[dict[str, Any]],
+    season: int,
+    *,
+    split_type: str,
+) -> dict[str, dict]:
     players: dict[str, dict] = {}
     for row in records:
         source = f"{season}_{'split' if split_type != 'overall' else 'overall'}"
@@ -1030,50 +1018,15 @@ def _fetch_batting_season_raw_with_status(
         if player is None:
             continue
         players[_normalize_name(player["name"])] = player
-
-    players = _enrich_batter_handedness(players, season, kind)
-    _save_raw_cache(kind, season, players)
-    return players, "fresh"
-
-
-def _fetch_pitching_season_raw(
-    season: int,
-    pitching_stats,
-    use_cache: bool,
-    *,
-    kind: str = "pitching",
-    month: int | None = None,
-    split_type: str = "overall",
-) -> dict[str, dict]:
-    players, _ = _fetch_pitching_season_raw_with_status(
-        season,
-        pitching_stats,
-        use_cache,
-        kind=kind,
-        month=month,
-        split_type=split_type,
-    )
     return players
 
 
-def _fetch_pitching_season_raw_with_status(
+def _build_pitching_players_from_records(
+    records: list[dict[str, Any]],
     season: int,
-    pitching_stats,
-    use_cache: bool,
     *,
-    kind: str = "pitching",
-    month: int | None = None,
-    split_type: str = "overall",
-) -> tuple[dict[str, dict], str]:
-    if use_cache:
-        cached = _load_raw_cache(kind, season)
-        if cached is not None:
-            return _enrich_pitcher_handedness(cached, season, kind), "cache"
-
-    fetch_kwargs: dict[str, Any] = {"qual": 1}
-    if month is not None:
-        fetch_kwargs["month"] = month
-    records = _frame_to_records(pitching_stats(season, **fetch_kwargs))
+    split_type: str,
+) -> dict[str, dict]:
     players: dict[str, dict] = {}
     for row in records:
         source = f"{season}_{'split' if split_type != 'overall' else 'overall'}"
@@ -1081,10 +1034,89 @@ def _fetch_pitching_season_raw_with_status(
         if player is None:
             continue
         players[_normalize_name(player["name"])] = player
+    return players
+
+
+def _fetch_batting_season_raw(
+    season: int,
+    use_cache: bool,
+    *,
+    kind: str = "batting",
+    split_type: str = "overall",
+) -> dict[str, dict]:
+    players, _ = _fetch_batting_season_raw_with_status(
+        season,
+        use_cache,
+        kind=kind,
+        split_type=split_type,
+    )
+    return players
+
+
+def _fetch_batting_season_raw_with_status(
+    season: int,
+    use_cache: bool,
+    *,
+    kind: str = "batting",
+    split_type: str = "overall",
+    records: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, dict], str]:
+    if use_cache:
+        cached = _load_raw_cache(kind, season)
+        if cached is not None:
+            return _enrich_batter_handedness(cached, season, kind), "cache"
+
+    resolved_records, source_tier = (
+        (records, "fresh")
+        if records is not None
+        else _fetch_batting_season_records_with_status(season, use_cache, kind=kind)
+    )
+    players = _build_batting_players_from_records(resolved_records, season, split_type=split_type)
+
+    players = _enrich_batter_handedness(players, season, kind)
+    _save_raw_cache(kind, season, players, records=resolved_records)
+    return players, source_tier
+
+
+def _fetch_pitching_season_raw(
+    season: int,
+    use_cache: bool,
+    *,
+    kind: str = "pitching",
+    split_type: str = "overall",
+) -> dict[str, dict]:
+    players, _ = _fetch_pitching_season_raw_with_status(
+        season,
+        use_cache,
+        kind=kind,
+        split_type=split_type,
+    )
+    return players
+
+
+def _fetch_pitching_season_raw_with_status(
+    season: int,
+    use_cache: bool,
+    *,
+    kind: str = "pitching",
+    split_type: str = "overall",
+    records: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, dict], str]:
+    if use_cache:
+        cached = _load_raw_cache(kind, season)
+        if cached is not None:
+            return _enrich_pitcher_handedness(cached, season, kind), "cache"
+
+    resolved_records, source_tier = (
+        (records, "fresh")
+        if records is not None
+        else _fetch_pitching_season_records_with_status(season, use_cache, kind=kind)
+    )
+    players = _build_pitching_players_from_records(resolved_records, season, split_type=split_type)
 
     players = _enrich_pitcher_handedness(players, season, kind)
-    _save_raw_cache(kind, season, players)
-    return players, "fresh"
+    _save_raw_cache(kind, season, players, records=resolved_records)
+    return players, source_tier
 
 
 def _fangraphs_split_query_params(
@@ -1411,10 +1443,9 @@ def fetch_batting_splits_with_statuses(
 ) -> tuple[dict[str, dict], list[DataSourceStatus]]:
     """Fetch batting stats plus run-wide source statuses."""
     source_statuses: list[DataSourceStatus] = []
-    batting_stats, _ = _import_pybaseball()
     s1_players, s2_players, s3_players = _load_overall_seasons(
         season,
-        lambda target_season, cache_enabled: _fetch_batting_season_raw_with_status(target_season, batting_stats, cache_enabled),
+        lambda target_season, cache_enabled: _fetch_batting_season_raw_with_status(target_season, cache_enabled),
         use_cache,
         label="Batting",
         source_prefix="batting_overall",
@@ -1482,10 +1513,9 @@ def fetch_pitching_splits_with_statuses(
 ) -> tuple[dict[str, dict], list[DataSourceStatus]]:
     """Fetch pitching stats plus run-wide source statuses."""
     source_statuses: list[DataSourceStatus] = []
-    _, pitching_stats = _import_pybaseball()
     s1_players, s2_players, s3_players = _load_overall_seasons(
         season,
-        lambda target_season, cache_enabled: _fetch_pitching_season_raw_with_status(target_season, pitching_stats, cache_enabled),
+        lambda target_season, cache_enabled: _fetch_pitching_season_raw_with_status(target_season, cache_enabled),
         use_cache,
         label="Pitching",
         source_prefix="pitching_overall",
@@ -1628,11 +1658,10 @@ def fetch_computed_league_averages(season: int = SEASON, use_cache: bool = True)
             _COMPUTED_LEAGUE_AVERAGE_CACHE[cache_key] = rates
             return rates
 
-    batting_stats, pitching_stats = _import_pybaseball()
-    batting_df = batting_stats(season, qual=1)
-    pitching_df = pitching_stats(season, qual=1)
+    batting_df, _ = _fetch_batting_season_records_with_status(season, use_cache, kind="batting")
+    pitching_df, _ = _fetch_pitching_season_records_with_status(season, use_cache, kind="pitching")
     rates = compute_league_averages(batting_df, pitching_df)
-    overall_batters = _fetch_batting_season_raw(season, batting_stats, use_cache)
+    overall_batters, _ = _fetch_batting_season_raw_with_status(season, use_cache, records=batting_df)
     vs_lhp_batters = _fetch_batting_split_raw(
         season,
         _SPLIT_MONTH_VS_LEFT,
@@ -1801,8 +1830,10 @@ def fetch_team_bullpen_stats(season: int = SEASON, use_cache: bool = True) -> di
     if cached is not None:
         return cached
 
-    _, pitching_stats = _import_pybaseball()
-    records = _frame_to_records(pitching_stats(season, qual=1))
+    records, _ = _fetch_pitching_season_records_with_status(season, use_cache, kind="pitching")
+    # Warm the shared overall-pitching raw cache so bullpen aggregation and
+    # other overall consumers reuse the same season payload instead of refetching.
+    _fetch_pitching_season_raw_with_status(season, use_cache, records=records)
     bullpen = _aggregate_team_bullpen_records(records, season)
     _TEAM_BULLPEN_CACHE[cache_key] = bullpen
     return bullpen
