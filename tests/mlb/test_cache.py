@@ -16,6 +16,7 @@ def cache_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(stats_mod, "CACHE_DIR", tmp_path)
     monkeypatch.setattr(stats_mod, "SEASON", SEASON)
+    monkeypatch.setattr(stats_mod, "_RAW_PAYLOAD_MEMORY_CACHE", {})
     return tmp_path
 
 

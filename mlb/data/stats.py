@@ -61,6 +61,7 @@ _PITCHER_NORMALIZER = 150.0
 _TEAM_BULLPEN_CACHE: dict[tuple[int, bool], dict[str, dict[str, Any]]] = {}
 _COMPUTED_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[str, float]] = {}
 _MATCHUP_LEAGUE_AVERAGE_CACHE: dict[tuple[int, bool], dict[tuple[Hand, Hand], dict[str, float]]] = {}
+_RAW_PAYLOAD_MEMORY_CACHE: dict[tuple[str, int], dict[str, Any]] = {}
 # ── Raw season stat cache (flat files, no subdirectories) ────────────────────
 
 def _raw_cache_path(kind: str, season: int) -> Path:
@@ -70,7 +71,7 @@ def _raw_cache_path(kind: str, season: int) -> Path:
 def _load_raw_cache_payload(kind: str, season: int) -> dict[str, Any] | None:
     path = _raw_cache_path(kind, season)
     if not path.exists():
-        return None
+        return _RAW_PAYLOAD_MEMORY_CACHE.get((kind, season))
     # Prior seasons never change; cache them forever.
     # Current season: re-fetch if older than STATS_CACHE_MAX_AGE_HOURS.
     if season >= SEASON:
@@ -112,6 +113,19 @@ def _save_raw_cache(
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
     logger.debug("Raw cache written: %s (%d players)", path, len(players))
+
+
+def _memoize_raw_cache_payload(
+    kind: str,
+    season: int,
+    players: dict[str, dict],
+    *,
+    records: list[dict[str, Any]] | None = None,
+) -> None:
+    payload: dict[str, Any] = {"players": players}
+    if records is not None:
+        payload["records"] = records
+    _RAW_PAYLOAD_MEMORY_CACHE[(kind, season)] = payload
 
 
 def _computed_cache_path(kind: str, season: int) -> Path:
@@ -937,7 +951,11 @@ def _fetch_batting_season_raw_with_status(
         else _fetch_batting_season_records_with_status(season, use_cache, kind=kind)
     )
     players = _build_batting_players_from_records(resolved_records, season, split_type=split_type)
-    _save_raw_cache(kind, season, players, records=resolved_records)
+    if use_cache:
+        if records is None:
+            _save_raw_cache(kind, season, players, records=resolved_records)
+        else:
+            _memoize_raw_cache_payload(kind, season, players, records=resolved_records)
     return players, source_tier
 
 
@@ -976,7 +994,11 @@ def _fetch_pitching_season_raw_with_status(
         else _fetch_pitching_season_records_with_status(season, use_cache, kind=kind)
     )
     players = _build_pitching_players_from_records(resolved_records, season, split_type=split_type)
-    _save_raw_cache(kind, season, players, records=resolved_records)
+    if use_cache:
+        if records is None:
+            _save_raw_cache(kind, season, players, records=resolved_records)
+        else:
+            _memoize_raw_cache_payload(kind, season, players, records=resolved_records)
     return players, source_tier
 
 
@@ -1013,7 +1035,8 @@ def _fetch_batting_split_raw_with_status(
         raise ValueError(f"Unsupported batting split type: {split_type}")
     records = fetch_batting_split_rows(season, sit_code=sit_code)
     players = _build_batting_players_from_records(records, season, split_type=split_type)
-    _save_raw_cache(kind, season, players, records=records)
+    if use_cache:
+        _save_raw_cache(kind, season, players, records=records)
     return players, "fresh"
 
 
@@ -1050,7 +1073,8 @@ def _fetch_pitching_split_raw_with_status(
         raise ValueError(f"Unsupported pitching split type: {split_type}")
     records = fetch_pitching_split_rows(season, sit_code=sit_code)
     players = _build_pitching_players_from_records(records, season, split_type=split_type)
-    _save_raw_cache(kind, season, players, records=records)
+    if use_cache:
+        _save_raw_cache(kind, season, players, records=records)
     return players, "fresh"
 
 

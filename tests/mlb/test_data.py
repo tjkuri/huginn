@@ -906,6 +906,43 @@ class TestFetchBattingSplits:
         assert scrape_count["n"] == 1
         assert "cached batter" in result
 
+    def test_pitching_records_seed_memory_cache_without_writing_disk_cache(self, tmp_path, monkeypatch):
+        import mlb.data.stats as stats_mod
+
+        monkeypatch.setattr(stats_mod, "CACHE_DIR", tmp_path)
+        monkeypatch.setattr(stats_mod, "_RAW_PAYLOAD_MEMORY_CACHE", {})
+
+        records = [
+            {
+                "ID": "2",
+                "Name": "Reliever",
+                "Team": "BOS",
+                "Throws": "R",
+                "IP": 40.0,
+                "BF": 180,
+                "G": 35,
+                "GS": 0,
+                "H": 30,
+                "2B": 5,
+                "3B": 1,
+                "HR": 4,
+                "BB": 18,
+                "HBP": 1,
+                "SO": 45,
+            },
+        ]
+
+        players, source_tier = stats_mod._fetch_pitching_season_raw_with_status(
+            2026,
+            use_cache=True,
+            records=records,
+        )
+
+        assert source_tier == "fresh"
+        assert "reliever" in players
+        assert stats_mod._load_raw_records_cache("pitching", 2026) == records
+        assert not (tmp_path / "raw_pitching-2026.json").exists()
+
     def test_batting_split_raw_uses_statsapi_hand_mapping(self, monkeypatch):
         import mlb.data.stats as stats_mod
 
