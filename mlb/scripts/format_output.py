@@ -175,19 +175,24 @@ def _batter_rate_rows(
     is_home: bool,
 ) -> list[dict[str, str]]:
     lineup = game_context.home_lineup if is_home else game_context.away_lineup
-    two_plus_hits: dict[str, float] = {}
+    one_plus_hits: dict[str, float] = {}
+    one_plus_doubles: dict[str, float] = {}
+    one_plus_hr: dict[str, float] = {}
     if simulated_games:
-        hit_outcomes = {"1B", "2B", "3B", "HR"}
-        two_plus_counts = Counter()
+        one_plus_hit_counts = Counter()
+        one_plus_double_counts = Counter()
+        one_plus_hr_counts = Counter()
         for game in simulated_games:
-            per_game_hits = Counter(
-                pa.batter_id for pa in game.pa_results if pa.outcome.value in hit_outcomes
-            )
-            for player_id, hits in per_game_hits.items():
-                if hits >= 2:
-                    two_plus_counts[player_id] += 1
+            player_ids_with_hit = {pa.batter_id for pa in game.pa_results if pa.outcome.value in {"1B", "2B", "3B", "HR"}}
+            player_ids_with_double = {pa.batter_id for pa in game.pa_results if pa.outcome.value == "2B"}
+            player_ids_with_hr = {pa.batter_id for pa in game.pa_results if pa.outcome.value == "HR"}
+            one_plus_hit_counts.update(player_ids_with_hit)
+            one_plus_double_counts.update(player_ids_with_double)
+            one_plus_hr_counts.update(player_ids_with_hr)
         total_games = len(simulated_games)
-        two_plus_hits = {pid: count / total_games for pid, count in two_plus_counts.items()}
+        one_plus_hits = {pid: count / total_games for pid, count in one_plus_hit_counts.items()}
+        one_plus_doubles = {pid: count / total_games for pid, count in one_plus_double_counts.items()}
+        one_plus_hr = {pid: count / total_games for pid, count in one_plus_hr_counts.items()}
 
     rows = []
     for batter in lineup.batting_order:
@@ -197,11 +202,10 @@ def _batter_rate_rows(
                 {
                     "name": batter.name,
                     "avg": ".000",
-                    "obp": ".000",
+                    "one_plus_hit": "0.0%",
                     "tb": "0.0",
-                    "k_pct": "0.0%",
-                    "two_plus_hits": "0.0%",
-                    "hr_pct": "0.0%",
+                    "double_pct": "0.0%",
+                    "one_plus_hr": "0.0%",
                 }
             )
             continue
@@ -210,16 +214,14 @@ def _batter_rate_rows(
         pa = max(0.001, stats.pa_per_game)
         ab = max(0.001, pa - stats.bb_per_game - hbp)
         avg = stats.hits_per_game / ab
-        obp = (stats.hits_per_game + stats.bb_per_game + hbp) / pa
         rows.append(
             {
                 "name": batter.name,
                 "avg": f"{avg:.3f}".lstrip("0"),
-                "obp": f"{obp:.3f}".lstrip("0"),
+                "one_plus_hit": f"{one_plus_hits.get(batter.player_id, 0.0) * 100:.1f}%",
                 "tb": f"{stats.total_bases_per_game:.1f}",
-                "k_pct": f"{(stats.k_per_game / pa) * 100:.1f}%",
-                "two_plus_hits": f"{two_plus_hits.get(batter.player_id, 0.0) * 100:.1f}%",
-                "hr_pct": f"{(stats.hr_per_game / pa) * 100:.1f}%",
+                "double_pct": f"{one_plus_doubles.get(batter.player_id, 0.0) * 100:.1f}%",
+                "one_plus_hr": f"{one_plus_hr.get(batter.player_id, 0.0) * 100:.1f}%",
             }
         )
     return rows
@@ -238,6 +240,7 @@ def _starter_rows(game_context: GameContext, result: SimulationResult) -> list[d
                 {
                     "name": starter.name,
                     "ip": "--",
+                    "outs": "--",
                     "k": "--",
                     "five_plus_k": "--",
                     "er": "--",
@@ -250,6 +253,7 @@ def _starter_rows(game_context: GameContext, result: SimulationResult) -> list[d
             {
                 "name": starter.name,
                 "ip": f"{getattr(stats, 'innings_pitched_per_game', 0.0):.1f}",
+                "outs": f"{getattr(stats, 'outs_recorded_per_game', 0.0):.1f}",
                 "k": f"{stats.k_per_game:.1f}",
                 "five_plus_k": f"{getattr(stats, 'k_5_plus_pct', 0.0) * 100:.1f}%",
                 "er": f"{stats.runs_per_game:.1f}",
@@ -305,15 +309,26 @@ def _build_plain_report(
         lines.append(f"{result.home_team}: {' '.join(str(v) for v in sample_game.inning_scores.get('home', []))}")
     lines.append(f"Total runs: {result.total_runs_mean:.1f} +/- {result.total_runs_std:.1f}")
     lines.append(f"Moneyline: {_abbrev(result.away_team)} {_american(result.away_win_pct)} | {_abbrev(result.home_team)} {_american(result.home_win_pct)}")
+    first_inning = result.betting_lines.get("first_inning", {})
+    first_five = result.betting_lines.get("first_five", {})
+    first_five_moneyline = first_five.get("moneyline", {})
+    lines.append(f"YRFI/NRFI: {first_inning.get('yrfi_pct', 0.0) * 100:.1f}% / {first_inning.get('nrfi_pct', 0.0) * 100:.1f}%")
+    lines.append(
+        "F5: "
+        f"avg runs {first_five.get('total_runs_mean', 0.0):.1f} | "
+        f"{_abbrev(result.away_team)} {first_five_moneyline.get('away', {}).get('probability', 0.0) * 100:.1f}% | "
+        f"{_abbrev(result.home_team)} {first_five_moneyline.get('home', {}).get('probability', 0.0) * 100:.1f}% | "
+        f"Tie {first_five_moneyline.get('tie_pct', 0.0) * 100:.1f}%"
+    )
     lines.append("Batters:")
     for row in _batter_rate_rows(game_context, result, simulated_games, is_home=False):
         lines.append(
-            f"{row['name']}: AVG {row['avg']} OBP {row['obp']} TB {row['tb']} K% {row['k_pct']} 2+H {row['two_plus_hits']} HR% {row['hr_pct']}"
+            f"{row['name']}: AVG {row['avg']} 1+H% {row['one_plus_hit']} TB {row['tb']} 2B% {row['double_pct']} 1+HR% {row['one_plus_hr']}"
         )
     lines.append("Starting pitchers:")
     for row in _starter_rows(game_context, result):
         lines.append(
-            f"{row['name']}: IP {row['ip']} K {row['k']} 5+K% {row['five_plus_k']} ER {row['er']} QS% {row['qs_pct']}"
+            f"{row['name']}: IP {row['ip']} Outs {row['outs']} K {row['k']} 5+K% {row['five_plus_k']} ER {row['er']} QS% {row['qs_pct']}"
         )
     bullpen_rows = _bullpen_rows(game_context, result)
     if bullpen_rows:
@@ -363,23 +378,25 @@ def _build_summary_panel(result: SimulationResult, game_context: GameContext):
         f"{_abbrev(result.away_team)} {result.away_win_pct * 100:.1f}%  ·  {_abbrev(result.home_team)} {result.home_win_pct * 100:.1f}%",
     )
     grid.add_row("", "")
-    grid.add_row("Over/under:", "")
-    for line in (8.5, 9.0, 9.5):
-        market = result.betting_lines.get("totals", {}).get(line)
-        if market:
-            over = market["over_pct"]
-            under = market["under_pct"]
-            denom = over + under
-            over_display = over / denom * 100 if denom > 0 else 50.0
-            under_display = under / denom * 100 if denom > 0 else 50.0
-            grid.add_row(
-                f"  O/U {line:.1f}",
-                f"Over {over_display:.1f}%  |  Under {under_display:.1f}%",
-            )
+    first_inning = result.betting_lines.get("first_inning", {})
+    grid.add_row(
+        "YRFI / NRFI:",
+        f"YRFI {first_inning.get('yrfi_pct', 0.0) * 100:.1f}%  ·  NRFI {first_inning.get('nrfi_pct', 0.0) * 100:.1f}%",
+    )
     grid.add_row("", "")
     grid.add_row(
         "Moneyline (no-vig):",
-        f"{_abbrev(result.home_team)} {_american(result.home_win_pct)}  ·  {_abbrev(result.away_team)} {_american(result.away_win_pct)}",
+        f"{_abbrev(result.away_team)} {_american(result.away_win_pct)}  ·  {_abbrev(result.home_team)} {_american(result.home_win_pct)}",
+    )
+    grid.add_row("", "")
+    first_five = result.betting_lines.get("first_five", {})
+    first_five_moneyline = first_five.get("moneyline", {})
+    grid.add_row("F5 avg runs:", f"{first_five.get('total_runs_mean', 0.0):.1f}")
+    grid.add_row(
+        "F5 moneyline:",
+        f"{_abbrev(result.away_team)} {first_five_moneyline.get('away', {}).get('probability', 0.0) * 100:.1f}%  ·  "
+        f"{_abbrev(result.home_team)} {first_five_moneyline.get('home', {}).get('probability', 0.0) * 100:.1f}%  ·  "
+        f"Tie {first_five_moneyline.get('tie_pct', 0.0) * 100:.1f}%",
     )
     grid.add_row("", "")
     lhr = game_context.park_factors.factors_vs_lhb.get("HR", 1.0)
@@ -499,11 +516,10 @@ def _build_batter_block(team_name: str, rows: list[dict[str, str]]):
             [
                 ("Player", 32, "left"),
                 ("AVG", 7, "right"),
-                ("OBP", 7, "right"),
+                ("1+H%", 8, "right"),
                 ("TB", 7, "right"),
-                ("K%", 7, "right"),
-                ("2+H%", 8, "right"),
-                ("HR%", 7, "right"),
+                ("2B%", 8, "right"),
+                ("1+HR%", 8, "right"),
             ],
             style="bold",
         ),
@@ -514,11 +530,10 @@ def _build_batter_block(team_name: str, rows: list[dict[str, str]]):
                 [
                     ("", 32, "left"),
                     (row["avg"], 7, "right"),
-                    (row["obp"], 7, "right"),
+                    (row["one_plus_hit"], 8, "right"),
                     (row["tb"], 7, "right"),
-                    (row["k_pct"], 7, "right"),
-                    (row["two_plus_hits"], 8, "right"),
-                    (row["hr_pct"], 7, "right"),
+                    (row["double_pct"], 8, "right"),
+                    (row["one_plus_hr"], 8, "right"),
                 ],
                 dot_leader_name=row["name"],
             )
@@ -533,6 +548,7 @@ def _build_pitcher_block(rows: list[dict[str, str]]):
             [
                 ("Pitcher", 32, "left"),
                 ("IP", 6, "right"),
+                ("Outs", 6, "right"),
                 ("K", 6, "right"),
                 ("5+K%", 8, "right"),
                 ("ER", 6, "right"),
@@ -547,6 +563,7 @@ def _build_pitcher_block(rows: list[dict[str, str]]):
                 [
                     ("", 32, "left"),
                     (row["ip"], 6, "right"),
+                    (row["outs"], 6, "right"),
                     (row["k"], 6, "right"),
                     (row["five_plus_k"], 8, "right"),
                     (row["er"], 6, "right"),

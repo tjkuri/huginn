@@ -212,6 +212,7 @@ class PlayerSimStats:
     doubles_per_game: float = 0.0
     hbp_per_game: float = 0.0
     total_bases_per_game: float = 0.0
+    outs_recorded_per_game: float = 0.0
     hits_per_game_std: float = 0.0
     hr_per_game_std: float = 0.0
     bb_per_game_std: float = 0.0

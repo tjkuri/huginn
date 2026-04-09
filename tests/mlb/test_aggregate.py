@@ -266,12 +266,49 @@ class TestComputeBettingLines:
         assert lines['moneyline']['away']['american'] > 0
 
     def test_all_sections_present(self):
-        """betting_lines contains totals, moneyline, run_line, team_totals."""
+        """betting_lines contains game, first-inning, and first-five sections."""
         games, run_dists = self._setup(100)
         lines = compute_betting_lines(games, run_dists)
-        assert set(lines.keys()) == {'totals', 'moneyline', 'run_line', 'team_totals'}
+        assert set(lines.keys()) == {'totals', 'moneyline', 'run_line', 'team_totals', 'first_inning', 'first_five'}
         assert 'away' in lines['team_totals']
         assert 'home' in lines['team_totals']
+        assert set(lines['first_inning'].keys()) == {'yrfi_pct', 'nrfi_pct'}
+        assert set(lines['first_five'].keys()) == {'away_runs_mean', 'home_runs_mean', 'total_runs_mean', 'moneyline'}
+
+    def test_first_five_uses_existing_inning_scores(self):
+        games = [
+            SimulatedGame(
+                game_id="g-1",
+                away_runs=5,
+                home_runs=4,
+                away_hits=6,
+                home_hits=5,
+                pa_results=[],
+                innings_played=9,
+                inning_scores={"away": [1, 1, 0, 1, 0, 1, 1, 0, 0], "home": [0, 1, 1, 0, 1, 0, 1, 0, 0]},
+            ),
+            SimulatedGame(
+                game_id="g-2",
+                away_runs=2,
+                home_runs=6,
+                away_hits=4,
+                home_hits=8,
+                pa_results=[],
+                innings_played=9,
+                inning_scores={"away": [0, 0, 1, 0, 0, 0, 1, 0, 0], "home": [1, 0, 1, 0, 0, 2, 1, 1, 0]},
+            ),
+        ]
+        run_dists = compute_run_distributions(games)
+        lines = compute_betting_lines(games, run_dists)
+
+        assert lines['first_inning']['yrfi_pct'] == pytest.approx(1.0)
+        assert lines['first_inning']['nrfi_pct'] == pytest.approx(0.0)
+        assert lines['first_five']['away_runs_mean'] == pytest.approx(2.0)
+        assert lines['first_five']['home_runs_mean'] == pytest.approx(2.5)
+        assert lines['first_five']['total_runs_mean'] == pytest.approx(4.5)
+        assert lines['first_five']['moneyline']['away']['probability'] == pytest.approx(0.0)
+        assert lines['first_five']['moneyline']['home']['probability'] == pytest.approx(0.5)
+        assert lines['first_five']['moneyline']['tie_pct'] == pytest.approx(0.5)
 
     def test_team_totals_structure(self):
         """team_totals contains lines from 2.5 to 8.5 and each sums to 1.0."""
@@ -313,9 +350,11 @@ class TestAggregateSimulations:
         assert some_stat.pa_per_game > 0
 
         # Betting lines
-        assert set(result.betting_lines.keys()) == {'totals', 'moneyline', 'run_line', 'team_totals'}
+        assert set(result.betting_lines.keys()) == {'totals', 'moneyline', 'run_line', 'team_totals', 'first_inning', 'first_five'}
         assert 5.5 in result.betting_lines['totals']
         assert 12.5 in result.betting_lines['totals']
+        assert 'yrfi_pct' in result.betting_lines['first_inning']
+        assert 'moneyline' in result.betting_lines['first_five']
 
         # Run distributions
         assert set(result.run_distributions.keys()) == {'away_runs', 'home_runs', 'total_runs', 'run_diff'}

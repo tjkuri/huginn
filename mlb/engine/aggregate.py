@@ -205,6 +205,7 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
             doubles_per_game=float(np.mean(doubles)),
             hbp_per_game=float(np.mean(hbp)),
             total_bases_per_game=float(np.mean(tb)),
+            outs_recorded_per_game=0.0,
             hits_per_game_std=float(np.std(hits)),
             hr_per_game_std=float(np.std(hr)),
             bb_per_game_std=float(np.std(bb)),
@@ -227,6 +228,7 @@ def compute_player_stats(games: list[SimulatedGame]) -> dict[str, PlayerSimStats
             bb_per_game=0.0,
             k_per_game=float(np.mean(strikeouts)),
             runs_per_game=float(np.mean(earned_runs)),
+            outs_recorded_per_game=float(np.mean(outs)),
             innings_pitched_per_game=float(np.mean(innings_pitched)),
             k_per_game_std=float(np.std(strikeouts)),
             k_5_plus_pct=float(np.mean(strikeouts >= 5.0)),
@@ -267,12 +269,18 @@ def compute_betting_lines(games: list[SimulatedGame], run_distributions: dict) -
         run_distributions: output of compute_run_distributions (passed for context;
             raw game data is used directly for probability calculations).
 
-    Returns a nested dict with keys: totals, moneyline, run_line, team_totals.
+    Returns a nested dict with keys: totals, moneyline, run_line, team_totals,
+    first_inning, first_five.
     """
     n = len(games)
     away_arr = np.array([g.away_runs for g in games], dtype=float)
     home_arr = np.array([g.home_runs for g in games], dtype=float)
     total_arr = away_arr + home_arr
+    first_inning_away_arr = np.array([sum(g.inning_scores.get('away', [])[:1]) for g in games], dtype=float)
+    first_inning_home_arr = np.array([sum(g.inning_scores.get('home', [])[:1]) for g in games], dtype=float)
+    first_five_away_arr = np.array([sum(g.inning_scores.get('away', [])[:5]) for g in games], dtype=float)
+    first_five_home_arr = np.array([sum(g.inning_scores.get('home', [])[:5]) for g in games], dtype=float)
+    first_five_total_arr = first_five_away_arr + first_five_home_arr
 
     # ── Game totals ──────────────────────────────────────────────────────────
     total_lines = [l / 2 for l in range(11, 26)]  # 5.5 to 12.5 in 0.5 steps
@@ -316,11 +324,43 @@ def compute_betting_lines(games: list[SimulatedGame], run_distributions: dict) -
         'home': _over_under_table(home_arr, team_lines),
     }
 
+    # ── First inning ─────────────────────────────────────────────────────────
+    yrfi_pct = float(np.mean((first_inning_away_arr + first_inning_home_arr) >= 1.0))
+    first_inning = {
+        'yrfi_pct': yrfi_pct,
+        'nrfi_pct': 1.0 - yrfi_pct,
+    }
+
+    # ── First five innings ───────────────────────────────────────────────────
+    f5_home_win_pct = float(np.mean(first_five_home_arr > first_five_away_arr))
+    f5_away_win_pct = float(np.mean(first_five_away_arr > first_five_home_arr))
+    f5_tie_pct = float(np.mean(first_five_home_arr == first_five_away_arr))
+    first_five = {
+        'away_runs_mean': float(np.mean(first_five_away_arr)),
+        'home_runs_mean': float(np.mean(first_five_home_arr)),
+        'total_runs_mean': float(np.mean(first_five_total_arr)),
+        'moneyline': {
+            'home': {
+                'probability': f5_home_win_pct,
+                'american': _american_odds(f5_home_win_pct),
+                'no_vig_line': _american_odds(f5_home_win_pct),
+            },
+            'away': {
+                'probability': f5_away_win_pct,
+                'american': _american_odds(f5_away_win_pct),
+                'no_vig_line': _american_odds(f5_away_win_pct),
+            },
+            'tie_pct': f5_tie_pct,
+        },
+    }
+
     return {
         'totals': totals,
         'moneyline': moneyline,
         'run_line': run_line,
         'team_totals': team_totals,
+        'first_inning': first_inning,
+        'first_five': first_five,
     }
 
 

@@ -153,8 +153,17 @@ def test_plain_report_uses_prop_market_projection_columns():
     assert "PLAYER PROJECTIONS" not in report
     assert "TB " in report
     assert " SLG " not in report
+    assert "OBP" not in report
+    assert " K% " not in report
+    assert "2+H" not in report
+    assert "1+H%" in report
+    assert "2B%" in report
+    assert "1+HR%" in report
+    assert "YRFI/NRFI:" in report
+    assert "F5: avg runs" in report
     assert "Starting pitchers:" in report
     assert "Bullpen:" in report
+    assert "Outs" in report
     assert "5+K%" in report
     assert "QS%" in report
     assert "K/9" not in report
@@ -261,6 +270,15 @@ def test_rich_report_hides_quality_panel_when_there_are_no_warnings():
 
     assert "DATA QUALITY" not in output
     assert "Bullpen" in output
+    assert "YRFI / NRFI" in output
+    assert "F5 avg runs" in output
+    assert "F5 moneyline" in output
+    assert "1+H%" in output
+    assert "2B%" in output
+    assert "1+HR%" in output
+    assert "OBP" not in output
+    assert "2+H%" not in output
+    assert "Outs" in output
 
 
 def test_rich_report_shows_quality_panel_for_missing_players_only():
