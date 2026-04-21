@@ -12,3 +12,6 @@ output/
 baseball_cache/
 docs/superpowers/
 HANDOFF.md
+.DS_Store
+cache/
+docs/
