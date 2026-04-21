@@ -135,27 +135,51 @@ compute the per-season ratio:
 ratio[stat] = split_rate[stat] / overall_rate[stat]   (1.0 when overall_rate is zero)
 ```
 
-Marcel-blend those per-season ratios toward **1.0** (the neutral, no-platoon-effect target)
-using separate split-ratio regression constants:
+Marcel-blend those per-season ratios toward the **league-wide platoon ratio for the
+relevant handedness bucket**, not 1.0. The target is derived once per projection pass
+from `LEAGUE_AVERAGES`:
 
-| Stat | Ratio constant (PA equiv.) |
-|------|-----------------------------|
-| K%   | 75  |
-| BB%  | 100 |
-| HR%  | 160 |
-| 1B%  | 100 |
-| 2B%  | 200 |
-| 3B%  | 400 |
-| HBP% | 200 |
+```
+target_ratio[bucket][stat]
+    = LEAGUE_AVERAGES[bucket][stat] / overall_hand_rate[stat]
+```
 
-Pitchers use a single ratio constant of **75 BF** for all rate stats.
+`overall_hand_rate` is the equal-weight mean of the two matchups that share the
+player's handedness:
+
+| Player hand | Averaged matchups              |
+|-------------|--------------------------------|
+| LHB         | LHB vs LHP, LHB vs RHP         |
+| RHB         | RHB vs LHP, RHB vs RHP         |
+| Switch      | RHB vs LHP, LHB vs RHP (batting-side-per-PA) |
+| LHP         | LHB vs LHP, RHB vs LHP         |
+| RHP         | LHB vs RHP, RHB vs RHP         |
+
+For switch hitters, the vs-LHP bucket takes its target from (RHB vs LHP) / overall_switch
+(they bat right vs LHP) and the vs-RHP bucket from (LHB vs RHP) / overall_switch.
+
+The regression constants are hand-specific — LHB platoon effects stabilize at smaller
+sample sizes than RHB splits, so RHBs regress more heavily toward the league target:
+
+| Stat | LHB (PA equiv.) | Switch (PA equiv.) | RHB (PA equiv.) |
+|------|-----------------|--------------------|-----------------|
+| K%   | 500             | 600                | 1100            |
+| BB%  | 500             | 600                | 1100            |
+| HR%  | 500             | 600                | 1100            |
+| 1B%  | 500             | 600                | 1100            |
+| 2B%  | 500             | 600                | 1100            |
+| 3B%  | 500             | 600                | 1100            |
+| HBP% | 500             | 600                | 1100            |
+
+Pitchers use a single ratio constant of **1000 BF** for all rate stats.
 
 The pitcher split-ratio blend uses the same DIPS-weighted year schedule (3 / 2 / 1)
 as the pitcher overall projection. Batter split-ratio blends still use 5 / 4 / 3.
 
-The ratio regression target is 1.0 rather than a matchup league-average rate because we
-are regressing a *multiplier* not an absolute rate. Thin samples pull the ratio toward
-1.0 (no platoon effect), not toward the league average platoon split.
+Regressing toward the league-wide platoon ratio — rather than 1.0 — means a
+player with thin split history converges on the league-average platoon split for
+their handedness (the right prior when we have no personal signal), not on "no
+platoon effect at all."
 
 **Step 3 — Apply ratio to overall baseline:**
 
@@ -166,10 +190,11 @@ projected_split_rate[stat] = overall_marcel_rate[stat] × blended_ratio[stat]
 The resulting split rates are re-normalized to sum to 1.0.
 
 **Effect on sample size extremes:**
-- Rich split history (300+ PA per bucket) → ratio reflects actual observed platoon split;
-  projected split stays close to what an independent Marcel would produce.
-- Thin split history (30 PA vs LHP) → ratio regresses heavily toward 1.0; projected
-  split stays close to overall talent rather than a noisy matchup average.
+- Rich split history (hundreds of PA per bucket) → ratio reflects actual observed
+  platoon split; projected split stays close to what an independent Marcel would produce.
+- Thin split history → ratio regresses toward the league-wide platoon ratio for the
+  player's handedness bucket; projected split expresses the league-average platoon
+  effect rather than a noisy personal sample.
 - No split data at all → split key is omitted; engine falls back to overall rates.
 
 If split rows are missing entirely, the matchup selection path falls back to the

@@ -43,15 +43,20 @@ _BATTER_REGRESSION_CONSTANTS: dict[str, float] = {
     "3B": 570.0,
     "HBP": 250.0,
 }
-# Separate constants for the split-ratio Marcel (regresses ratio toward 1.0, not an absolute rate)
-_BATTER_RATIO_REGRESSION_CONSTANTS: dict[str, float] = {
-    "BB": 100.0,
-    "K": 75.0,
-    "HR": 160.0,
-    "1B": 100.0,
-    "2B": 200.0,
-    "3B": 400.0,
-    "HBP": 200.0,
+# Split-ratio Marcel constants (regress toward the league-wide platoon ratio for
+# the relevant handedness bucket, not toward 1.0). Hand-specific because LHB and
+# RHB platoon effects stabilize at different sample sizes. See METHODOLOGY.md.
+_LHB_RATIO_REGRESSION_CONSTANTS: dict[str, float] = {
+    "K": 500.0, "BB": 500.0, "HR": 500.0,
+    "1B": 500.0, "2B": 500.0, "3B": 500.0, "HBP": 500.0,
+}
+_RHB_RATIO_REGRESSION_CONSTANTS: dict[str, float] = {
+    "K": 1100.0, "BB": 1100.0, "HR": 1100.0,
+    "1B": 1100.0, "2B": 1100.0, "3B": 1100.0, "HBP": 1100.0,
+}
+_SWITCH_RATIO_REGRESSION_CONSTANTS: dict[str, float] = {
+    "K": 600.0, "BB": 600.0, "HR": 600.0,
+    "1B": 600.0, "2B": 600.0, "3B": 600.0, "HBP": 600.0,
 }
 _PITCHER_REGRESSION_CONSTANTS: dict[str, float] = {
     "K": 75.0,
@@ -62,7 +67,7 @@ _PITCHER_REGRESSION_CONSTANTS: dict[str, float] = {
     "2B": 1000.0,
     "3B": 1500.0,
 }
-_PITCHER_RATIO_REGRESSION_CONSTANT = 75.0
+_PITCHER_RATIO_REGRESSION_CONSTANT = 1000.0
 _BATTER_NORMALIZER = 200.0
 _PITCHER_NORMALIZER = 150.0
 
@@ -196,13 +201,74 @@ def marcel_blend(
 
 
 
+_RATE_STATS: tuple[str, ...] = ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+
+
 def _overall_league_avg_rates() -> dict[str, float]:
     """Simple average of all four matchup league averages (Marcel regression target for overall rates)."""
-    stats = ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
     matchups = list(LEAGUE_AVERAGES.values())
-    result = {stat: sum(m.get(stat, 0.0) for m in matchups) / len(matchups) for stat in stats}
+    result = {stat: sum(m.get(stat, 0.0) for m in matchups) / len(matchups) for stat in _RATE_STATS}
     result["OUT"] = 0.0
     return _normalize_rates(result)
+
+
+def _mean_rates(*matchups: dict[str, float]) -> dict[str, float]:
+    n = len(matchups)
+    return {stat: sum(m.get(stat, 0.0) for m in matchups) / n for stat in _RATE_STATS}
+
+
+def _ratio_rates(split: dict[str, float], overall: dict[str, float]) -> dict[str, float]:
+    return {
+        stat: (split[stat] / overall[stat] if overall.get(stat, 0.0) > 0 else 1.0)
+        for stat in _RATE_STATS
+    }
+
+
+def _batter_platoon_ratio_targets() -> dict[tuple[Hand, Hand], dict[str, float]]:
+    """League-wide platoon ratio targets keyed by (batter_hand, pitcher_hand).
+
+    For each matchup the target is LEAGUE_AVERAGES[matchup][stat] divided by the
+    equal-weight mean of that batter hand's two matchup rows. Switch hitters get
+    targets from the mean of (R,L) and (L,R) — they bat opposite the pitcher, so
+    vs_lhp rows represent them batting R and vs_rhp rows represent them batting L.
+    """
+    L, R, S = Hand.LEFT, Hand.RIGHT, Hand.SWITCH
+    overall_lhb = _mean_rates(LEAGUE_AVERAGES[(L, L)], LEAGUE_AVERAGES[(L, R)])
+    overall_rhb = _mean_rates(LEAGUE_AVERAGES[(R, L)], LEAGUE_AVERAGES[(R, R)])
+    overall_switch = _mean_rates(LEAGUE_AVERAGES[(R, L)], LEAGUE_AVERAGES[(L, R)])
+    return {
+        (L, L): _ratio_rates(LEAGUE_AVERAGES[(L, L)], overall_lhb),
+        (L, R): _ratio_rates(LEAGUE_AVERAGES[(L, R)], overall_lhb),
+        (R, L): _ratio_rates(LEAGUE_AVERAGES[(R, L)], overall_rhb),
+        (R, R): _ratio_rates(LEAGUE_AVERAGES[(R, R)], overall_rhb),
+        (S, L): _ratio_rates(LEAGUE_AVERAGES[(R, L)], overall_switch),
+        (S, R): _ratio_rates(LEAGUE_AVERAGES[(L, R)], overall_switch),
+    }
+
+
+def _pitcher_platoon_ratio_targets() -> dict[tuple[Hand, Hand], dict[str, float]]:
+    """League-wide platoon ratio targets keyed by (pitcher_throws, batter_hand).
+
+    The denominator is the equal-weight mean of the two matchups that pitcher
+    hand participates in (both batter hands facing that pitcher hand).
+    """
+    L, R = Hand.LEFT, Hand.RIGHT
+    overall_lhp = _mean_rates(LEAGUE_AVERAGES[(L, L)], LEAGUE_AVERAGES[(R, L)])
+    overall_rhp = _mean_rates(LEAGUE_AVERAGES[(L, R)], LEAGUE_AVERAGES[(R, R)])
+    return {
+        (L, L): _ratio_rates(LEAGUE_AVERAGES[(L, L)], overall_lhp),
+        (L, R): _ratio_rates(LEAGUE_AVERAGES[(R, L)], overall_lhp),
+        (R, L): _ratio_rates(LEAGUE_AVERAGES[(L, R)], overall_rhp),
+        (R, R): _ratio_rates(LEAGUE_AVERAGES[(R, R)], overall_rhp),
+    }
+
+
+def _batter_ratio_regression_constants(bats: Hand) -> dict[str, float]:
+    if bats == Hand.LEFT:
+        return _LHB_RATIO_REGRESSION_CONSTANTS
+    if bats == Hand.SWITCH:
+        return _SWITCH_RATIO_REGRESSION_CONSTANTS
+    return _RHB_RATIO_REGRESSION_CONSTANTS
 
 
 def _marcel_source_tag(n_seasons: int) -> str:
@@ -254,14 +320,17 @@ def _apply_marcel(
 def _apply_marcel_ratios(
     ratio_seasons: list[tuple[int, dict[str, float], float]],
     regression_constants: dict[str, float],
+    target_ratios: dict[str, float],
     normalizer: float,
 ) -> tuple[dict[str, float], int]:
-    """Marcel-blend per-season split/overall ratios toward 1.0 (no platoon effect).
+    """Marcel-blend per-season split/overall ratios toward the league-wide platoon ratio.
 
     Args:
         ratio_seasons: List of (year_coefficient, ratio_rates_dict, sample_size) where
                        each ratio is split_rate[stat] / overall_rate[stat] for that season.
-        regression_constants: Halved per-stat regression constants (ratio regression).
+        regression_constants: Per-stat regression constants (sample-size equivalents).
+        target_ratios: Per-stat regression targets — the league-wide platoon ratio
+                       for this (batter_hand, pitcher_hand) bucket.
         normalizer: 200 for batters (PA), 150 for pitchers (BF).
 
     Returns:
@@ -270,15 +339,16 @@ def _apply_marcel_ratios(
     seasons_with_data = [(yc, rates, pa) for yc, rates, pa in ratio_seasons if pa > 0]
     n = len(seasons_with_data)
     if n == 0:
-        return {stat: 1.0 for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")}, 0
+        return {stat: target_ratios.get(stat, 1.0) for stat in _RATE_STATS}, 0
 
     blended: dict[str, float] = {}
-    for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR"):
-        season_data = [(yc, rates.get(stat, 1.0), pa) for yc, rates, pa in seasons_with_data]
+    for stat in _RATE_STATS:
+        target = target_ratios.get(stat, 1.0)
+        season_data = [(yc, rates.get(stat, target), pa) for yc, rates, pa in seasons_with_data]
         blended[stat] = marcel_blend(
             season_data,
             regression_constants[stat],
-            1.0,  # regression target: no platoon effect
+            target,
             normalizer,
         )
     return blended, n
@@ -334,9 +404,11 @@ def _marcel_batter_player(
 
     # Two-step split projection: anchor to overall Marcel, apply ratio adjustment.
     # Step 1 (overall Marcel) is already done above.
-    # Step 2: for each split, Marcel-blend per-season ratios (split/overall) toward 1.0,
-    # then multiply overall rates by those ratios. Thin split history regresses ratio
-    # toward 1.0 so the projection stays close to overall talent.
+    # Step 2: for each split, Marcel-blend per-season ratios (split/overall) toward
+    # the league-wide platoon ratio for this (batter_hand, pitcher_hand) bucket,
+    # then multiply overall rates by those ratios.
+    platoon_targets = _batter_platoon_ratio_targets()
+    ratio_constants = _batter_ratio_regression_constants(bats)
     splits: dict[str, dict[str, Any]] = {}
     for split_key, pitcher_hand, sp1, sp2, sp3 in (
         ("vs_lhp", Hand.LEFT, s1_vs_lhp, s2_vs_lhp, s3_vs_lhp),
@@ -354,19 +426,20 @@ def _marcel_batter_player(
             ov_rates = dict((ov or {}).get("rates") or {})
             ratio_rates = {
                 stat: (sp_rates.get(stat, 0.0) / ov_rates[stat] if ov_rates.get(stat, 0.0) > 0 else 1.0)
-                for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+                for stat in _RATE_STATS
             }
             ratio_seasons.append((yc, ratio_rates, _safe_int(sp.get("pa"))))
 
         if not ratio_seasons:
             continue
 
+        target = platoon_targets[(bats, pitcher_hand)]
         blended_ratios, split_n = _apply_marcel_ratios(
-            ratio_seasons, _BATTER_RATIO_REGRESSION_CONSTANTS, _BATTER_NORMALIZER
+            ratio_seasons, ratio_constants, target, _BATTER_NORMALIZER
         )
         split_rates = {
             stat: blended_rates[stat] * blended_ratios.get(stat, 1.0)
-            for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+            for stat in _RATE_STATS
         }
         split_rates["OUT"] = 0.0
         split_rates = _normalize_rates(split_rates)
@@ -444,7 +517,10 @@ def _marcel_pitcher_player(
     }
 
     # Two-step split projection: anchor to overall Marcel, apply ratio adjustment.
-    ratio_regression_constants = {stat: _PITCHER_RATIO_REGRESSION_CONSTANT for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")}
+    # Ratio is Marcel-blended toward the league-wide platoon ratio for the
+    # (pitcher_throws, batter_hand) bucket.
+    platoon_targets = _pitcher_platoon_ratio_targets()
+    ratio_regression_constants = {stat: _PITCHER_RATIO_REGRESSION_CONSTANT for stat in _RATE_STATS}
     splits: dict[str, dict[str, Any]] = {}
     for split_key, batter_hand, sp1, sp2, sp3 in (
         ("vs_lhb", Hand.LEFT, s1_vs_lhb, s2_vs_lhb, s3_vs_lhb),
@@ -462,19 +538,20 @@ def _marcel_pitcher_player(
             ov_rates = dict((ov or {}).get("rates") or {})
             ratio_rates = {
                 stat: (sp_rates.get(stat, 0.0) / ov_rates[stat] if ov_rates.get(stat, 0.0) > 0 else 1.0)
-                for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+                for stat in _RATE_STATS
             }
             ratio_seasons.append((yc, ratio_rates, _safe_int(sp.get("pa_against"))))
 
         if not ratio_seasons:
             continue
 
+        target = platoon_targets[(throws_hand, batter_hand)]
         blended_ratios, split_n = _apply_marcel_ratios(
-            ratio_seasons, ratio_regression_constants, _PITCHER_NORMALIZER
+            ratio_seasons, ratio_regression_constants, target, _PITCHER_NORMALIZER
         )
         split_rates = {
             stat: blended_rates[stat] * blended_ratios.get(stat, 1.0)
-            for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")
+            for stat in _RATE_STATS
         }
         split_rates["OUT"] = 0.0
         split_rates = _normalize_rates(split_rates)
