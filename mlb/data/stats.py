@@ -35,15 +35,15 @@ _PITCHING_SPLIT_SIT_CODES = {
     "vs_rhb": "vr",
 }
 _BATTER_REGRESSION_CONSTANTS: dict[str, float] = {
-    "BB": 200.0,
-    "K": 150.0,
-    "HR": 320.0,
-    "1B": 200.0,
-    "2B": 400.0,
-    "3B": 800.0,
-    "HBP": 400.0,
+    "BB": 110.0,
+    "K": 60.0,
+    "HR": 150.0,
+    "1B": 295.0,
+    "2B": 1100.0,
+    "3B": 570.0,
+    "HBP": 250.0,
 }
-# Halved constants for the split-ratio Marcel (regresses ratio toward 1.0, not an absolute rate)
+# Separate constants for the split-ratio Marcel (regresses ratio toward 1.0, not an absolute rate)
 _BATTER_RATIO_REGRESSION_CONSTANTS: dict[str, float] = {
     "BB": 100.0,
     "K": 75.0,

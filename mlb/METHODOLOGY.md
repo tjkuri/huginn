@@ -61,17 +61,17 @@ projected_rate = (w1×r_2026 + w2×r_2025 + w3×r_2024 + w_lg×league_avg)
 The normalizer is **200 PA** for batters and **150 BF** for pitchers. A missing season contributes
 weight zero and drops out naturally.
 
-Batter regression constants (Tango's original values, in PA equivalents):
+Batter regression constants (post-2012 stabilization research, in PA equivalents):
 
 | Stat | Constant | Interpretation |
 |------|----------|----------------|
-| K%   | 150      | moderately stable |
-| BB%  | 200      | stable |
-| HR%  | 320      | high variance, regresses a lot |
-| 1B%  | 200      | stable |
-| 2B%  | 400      | less reliable than K/BB |
-| 3B%  | 800      | very noisy, heavily regressed |
-| HBP% | 400      | noisy |
+| K%   | 60       | stabilizes quickly |
+| BB%  | 110      | stabilizes fairly quickly |
+| HR%  | 150      | moderately stable |
+| 1B%  | 295      | moderate variance |
+| 2B%  | 1100     | very noisy, heavily regressed |
+| 3B%  | 570      | noisy |
+| HBP% | 250      | moderate variance |
 
 OUT% is not independently projected — it is derived as `1 − sum(other rates)`.
 
@@ -80,9 +80,9 @@ Pitchers use a single regression constant of **150 BF** for all rate stats (v1).
 **Concrete example — HR%, two seasons:**
 
 A hitter with 400 PA in 2025 at HR%=0.040 and 60 PA in 2026 at HR%=0.020, league avg HR%=0.033:
-- w1 = 5 × (60/200) = 1.5, w2 = 4 × (400/200) = 8.0, w_lg = 320/200 = 1.6
-- projected = (1.5×0.020 + 8.0×0.040 + 1.6×0.033) / (1.5 + 8.0 + 1.6)
-- = (0.030 + 0.320 + 0.053) / 11.1 ≈ **0.0363**
+- w1 = 5 × (60/200) = 1.5, w2 = 4 × (400/200) = 8.0, w_lg = 150/200 = 0.75
+- projected = (1.5×0.020 + 8.0×0.040 + 0.75×0.033) / (1.5 + 8.0 + 0.75)
+- = (0.030 + 0.320 + 0.02475) / 10.25 ≈ **0.0366**
 
 The 2025 season dominates because it has 6.7× more weight than the thin 2026 sample.
 
@@ -110,7 +110,7 @@ ratio[stat] = split_rate[stat] / overall_rate[stat]   (1.0 when overall_rate is 
 ```
 
 Marcel-blend those per-season ratios toward **1.0** (the neutral, no-platoon-effect target)
-using halved regression constants:
+using separate split-ratio regression constants:
 
 | Stat | Ratio constant (PA equiv.) |
 |------|-----------------------------|
