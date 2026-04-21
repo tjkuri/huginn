@@ -53,7 +53,15 @@ _BATTER_RATIO_REGRESSION_CONSTANTS: dict[str, float] = {
     "3B": 400.0,
     "HBP": 200.0,
 }
-_PITCHER_REGRESSION_CONSTANT = 150.0
+_PITCHER_REGRESSION_CONSTANTS: dict[str, float] = {
+    "K": 75.0,
+    "BB": 180.0,
+    "HBP": 600.0,
+    "1B": 600.0,
+    "HR": 1000.0,
+    "2B": 1000.0,
+    "3B": 1500.0,
+}
 _PITCHER_RATIO_REGRESSION_CONSTANT = 75.0
 _BATTER_NORMALIZER = 200.0
 _PITCHER_NORMALIZER = 150.0
@@ -394,19 +402,20 @@ def _marcel_pitcher_player(
     """Apply Marcel projection to one pitcher across up to three seasons.
 
     Returns a merged player dict or None if no data.
-    s1=current season (year_coeff=5), s2=prior (4), s3=two-prior (3).
+    s1=current season (year_coeff=3), s2=prior (2), s3=two-prior (1).
+    Pitcher year weights are lower than batter weights (5/4/3) because DIPS
+    research shows pitcher contact-quality outcomes are far noisier year-to-year.
     """
     overall_seasons = [
         (yc, dict(player.get("rates") or {}), _safe_int(player.get("pa_against")))
-        for yc, player in ((5, s1_overall), (4, s2_overall), (3, s3_overall))
+        for yc, player in ((3, s1_overall), (2, s2_overall), (1, s3_overall))
         if player and _safe_int(player.get("pa_against")) > 0
     ]
     if not overall_seasons:
         return None
 
-    regression_constants = {stat: _PITCHER_REGRESSION_CONSTANT for stat in ("K", "BB", "HBP", "1B", "2B", "3B", "HR")}
     league_avg = overall_league_avg if overall_league_avg is not None else _overall_league_avg_rates()
-    blended_rates, n_seasons = _apply_marcel(overall_seasons, regression_constants, league_avg, _PITCHER_NORMALIZER)
+    blended_rates, n_seasons = _apply_marcel(overall_seasons, _PITCHER_REGRESSION_CONSTANTS, league_avg, _PITCHER_NORMALIZER)
     source_tag = _marcel_source_tag(n_seasons)
 
     primary = s1_overall or s2_overall or s3_overall
@@ -443,9 +452,9 @@ def _marcel_pitcher_player(
     ):
         ratio_seasons = []
         for yc, sp, ov in (
-            (5, sp1, s1_overall),
-            (4, sp2, s2_overall),
-            (3, sp3, s3_overall),
+            (3, sp1, s1_overall),
+            (2, sp2, s2_overall),
+            (1, sp3, s3_overall),
         ):
             if not sp or _safe_int(sp.get("pa_against")) <= 0:
                 continue

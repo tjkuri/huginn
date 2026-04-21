@@ -49,9 +49,9 @@ This is a rough reconstruction:
 Player projections are built with Marcel 3-season regression. For each rate stat independently:
 
 ```
-w1 = 5 × (PA_2026 / normalizer)
-w2 = 4 × (PA_2025 / normalizer)
-w3 = 3 × (PA_2024 / normalizer)
+w1 = year_weight_current × (opportunities_2026 / normalizer)
+w2 = year_weight_prior   × (opportunities_2025 / normalizer)
+w3 = year_weight_two     × (opportunities_2024 / normalizer)
 w_lg = regression_constant / normalizer
 
 projected_rate = (w1×r_2026 + w2×r_2025 + w3×r_2024 + w_lg×league_avg)
@@ -60,6 +60,17 @@ projected_rate = (w1×r_2026 + w2×r_2025 + w3×r_2024 + w_lg×league_avg)
 
 The normalizer is **200 PA** for batters and **150 BF** for pitchers. A missing season contributes
 weight zero and drops out naturally.
+
+Year weights reflect how quickly a position's underlying skill decays in signal:
+
+| Role     | Current | Prior | Two-prior |
+|----------|---------|-------|-----------|
+| Batters  | 5       | 4     | 3         |
+| Pitchers | 3       | 2     | 1         |
+
+DIPS research (McCracken and follow-ups) shows pitcher contact-quality outcomes are far noisier
+year-to-year than batter outcomes. Older pitcher seasons carry less predictive weight, so the
+pitcher schedule starts lower (3) and decays faster relative to batters.
 
 Batter regression constants (post-2012 stabilization research, in PA equivalents):
 
@@ -75,7 +86,22 @@ Batter regression constants (post-2012 stabilization research, in PA equivalents
 
 OUT% is not independently projected — it is derived as `1 − sum(other rates)`.
 
-Pitchers use a single regression constant of **150 BF** for all rate stats (v1).
+Pitcher regression constants (DIPS-weighted, in BF equivalents):
+
+| Stat | Constant | Interpretation |
+|------|----------|----------------|
+| K%   | 75       | most stable pitcher skill (strikeout rate) |
+| BB%  | 180      | stable, pitcher-controlled |
+| HBP% | 600      | noisy, heavily regressed |
+| 1B%  | 600      | BABIP-driven, low pitcher signal |
+| HR%  | 1000     | extremely noisy; HR/FB luck-dominated |
+| 2B%  | 1000     | batted-ball outcome, heavily regressed |
+| 3B%  | 1500     | park/speed-driven, essentially noise |
+
+These are much higher than the batter constants because pitcher contact outcomes are
+dominated by defense, park, and random variation rather than pitcher skill. Strikeout and
+walk rates — the outcomes the pitcher most directly controls — stabilize fastest and use
+the smallest constants.
 
 **Concrete example — HR%, two seasons:**
 
@@ -123,6 +149,9 @@ using separate split-ratio regression constants:
 | HBP% | 200 |
 
 Pitchers use a single ratio constant of **75 BF** for all rate stats.
+
+The pitcher split-ratio blend uses the same DIPS-weighted year schedule (3 / 2 / 1)
+as the pitcher overall projection. Batter split-ratio blends still use 5 / 4 / 3.
 
 The ratio regression target is 1.0 rather than a matchup league-average rate because we
 are regressing a *multiplier* not an absolute rate. Thin samples pull the ratio toward

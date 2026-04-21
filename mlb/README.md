@@ -131,7 +131,7 @@ After N simulations (default 10,000):
 
 **League average fallback chain:** computed from current-season MLB Stats API overall rows plus MLB Stats API handedness `statSplits` → `computed_league_averages-{season}.json` cache → hardcoded constants in `config.py` with a warning.
 
-**Player projection model:** batter and pitcher rates are Marcel-style 3-season regressions. Overall and split rates are blended from 2026, 2025, and 2024 with recency weights (`5/4/3`) scaled by sample size, then regressed toward a league baseline. Missing seasons naturally contribute zero weight. Completely unknown players still fall back to league-average rates.
+**Player projection model:** batter and pitcher rates are Marcel-style 3-season regressions. Batters use recency weights (`5/4/3`), while pitchers use lower DIPS-inspired weights (`3/2/1`) because pitcher contact-quality outcomes are noisier than strikeout and walk rates. These weights are scaled by sample size and regressed toward a league baseline. Missing seasons naturally contribute zero weight. Completely unknown players still fall back to league-average rates.
 
 ### Current Data Flow
 
