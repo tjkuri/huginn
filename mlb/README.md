@@ -255,10 +255,13 @@ mlb/
                          pitcher substitution, half-inning loop, full 9-inning game
     aggregate.py         run_simulations, compute_player_stats (incl. PitcherSimStats),
                          compute_betting_lines, aggregate_simulations
+  utils/
+    normalize.py         Canonical player-name normalizer for cross-source matching
   scripts/
     simulate_game.py     CLI entry point: fetch → filter → simulate → serialize/report
     format_output.py     Rich terminal formatter (box score, player tables, data notes)
     test_smoke.py        Synthetic end-to-end smoke test (no network required)
     diagnose_calibration.py  League-average neutral game calibration check
+    diagnose_pitchers.py     Probable pitcher assignment vs roster fallback check
 tests/mlb/               pytest suite
 ```

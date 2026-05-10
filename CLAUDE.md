@@ -28,6 +28,8 @@ mlb/                             MLB Monte Carlo simulation engine
   data/builder.py                Assembles GameContext from fetched data + fallbacks
   engine/probabilities.py        Odds ratio, park/weather adjustments, PA probability tables
   engine/simulate.py             Game simulation: outcome sampling, baserunners, 9-inning loop
+  engine/aggregate.py            run_simulations, player/pitcher sim stats, betting lines
+  utils/normalize.py             Canonical player-name normalizer for cross-source matching
   scripts/simulate_game.py       CLI entry point for schedule→data→simulation→JSON/report flow
   scripts/format_output.py       Rich terminal formatter for box score, summary, data quality, players
   scripts/test_smoke.py          Synthetic end-to-end smoke test (no APIs)
