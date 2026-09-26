@@ -35,18 +35,42 @@ class TestGradePredictionRealBets:
 
 
 class TestGradePredictionNoBet:
-    def test_hypothetical_hit_uses_z_score_sign(self):
+    def test_hypothetical_hit_agrees_with_zscore_and_winprob(self):
         no_bet_verdict = {**_make_prediction()["verdict"], "recommendation": "NO_BET", "z_score": -0.3}
         pred = _make_prediction(verdict=no_bet_verdict)
         result = grade_prediction(pred, actual_yards=250.0)  # above line -> OVER actually happened
         assert result["hit"] is None
-        assert result["hypothetical_hit"] is True  # z<0 implied OVER, and it went OVER
+        # z<0 and win_probability=78.6>50 agree -> implied OVER, and it went OVER
+        assert result["hypothetical_hit"] is True
 
     def test_hypothetical_miss(self):
         no_bet_verdict = {**_make_prediction()["verdict"], "recommendation": "NO_BET", "z_score": -0.3}
         pred = _make_prediction(verdict=no_bet_verdict)
         result = grade_prediction(pred, actual_yards=200.0)  # below line -> UNDER actually happened
         assert result["hypothetical_hit"] is False
+
+    def test_hypothetical_hit_uses_win_probability_not_just_zscore_sign(self):
+        # z_score<0 alone would (wrongly) imply OVER, but win_probability=45.0<=50 means the
+        # verdict's actual de-vigged choice disagreed with the z-sign and picked UNDER instead
+        # (e.g. book's fair_over was higher than the z-implied p_over would suggest). The old
+        # z-sign-only formula would have guessed OVER here and scored this case False; the
+        # correct (z<0) == (win_probability>50) formula recovers the true chosen side (UNDER).
+        no_bet_verdict = {
+            **_make_prediction()["verdict"],
+            "recommendation": "NO_BET", "z_score": -0.3, "win_probability": 45.0,
+        }
+        pred = _make_prediction(verdict=no_bet_verdict)
+        result = grade_prediction(pred, actual_yards=200.0)  # below line=235.5 -> UNDER actually happened
+        assert result["hit"] is None
+        assert result["hypothetical_hit"] is True
+
+
+class TestGradePredictionPush:
+    def test_exact_line_match_is_a_push_not_a_win_or_loss(self):
+        result = grade_prediction(_make_prediction(), actual_yards=235.5)  # == line
+        assert result["hit"] is None
+        assert result["hypothetical_hit"] is None
+        assert result["abs_error"] is not None  # abs_error compares to adjusted_mean, not line
 
 
 class TestGradePredictionPendingResult:

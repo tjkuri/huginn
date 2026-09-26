@@ -24,18 +24,40 @@ def grade_prediction(prediction, actual_yards):
     adjusted_mean = prediction.get("adjusted_mean")
     result["abs_error"] = abs(actual_yards - adjusted_mean) if adjusted_mean is not None else None
 
+    if actual_yards == line:
+        # Push: an exact tie is neither a win nor a loss for either side. Excluded from
+        # win/loss math (real_bets in metrics.py filters on hit is not None) while still
+        # counting as gradeable (filtered on actual_yards is not None) — same convention
+        # nba/backtest/grader.py establishes with its explicit "PUSH" state, adapted here
+        # without needing a separate string state since this module has no v2_result/v1_result
+        # field to carry it in.
+        result["hit"] = None
+        result["hypothetical_hit"] = None
+        return result
+
     actual_side = "OVER" if actual_yards > line else "UNDER"
 
     if recommendation in ("OVER", "UNDER"):
         result["hit"] = (actual_side == recommendation)
         result["hypothetical_hit"] = None
     elif recommendation == "NO_BET":
-        # Same side logic computeQbVerdict itself falls back to when it can't de-vig: line
-        # below the model's mean (negative z) implies OVER, above implies UNDER. This
-        # recovers which way the model leaned even though NO_BET means the edge/confidence
-        # bar wasn't cleared to actually recommend it.
+        # Recover which side computeQbVerdict actually chose even though NO_BET means the
+        # edge/confidence bar wasn't cleared to recommend it. On the normal path the verdict
+        # picks the side with the larger de-vigged edge, which can disagree with z_score's
+        # sign alone (that sign-only logic is only what computeQbVerdict itself falls back to
+        # when it can't de-vig the book's prices). Both z_score and win_probability are always
+        # persisted in the snapshot, and win_probability is always the model's probability of
+        # whichever side was actually chosen — so the chosen side was OVER iff a below-mean
+        # line (z < 0, which per z-sign alone implies OVER) agrees with win_probability > 50
+        # (i.e. the chosen side is the more-likely-per-z one).
         z = verdict.get("z_score")
-        implied_side = ("OVER" if z < 0 else "UNDER") if z is not None else None
+        win_prob = verdict.get("win_probability")
+        implied_side = None
+        if z is not None and win_prob is not None:
+            implied_side = "OVER" if (z < 0) == (win_prob > 50) else "UNDER"
+        elif z is not None:
+            # Defensive fallback for an older logged snapshot missing win_probability.
+            implied_side = "OVER" if z < 0 else "UNDER"
         result["hit"] = None
         result["hypothetical_hit"] = (actual_side == implied_side) if implied_side else None
     else:
