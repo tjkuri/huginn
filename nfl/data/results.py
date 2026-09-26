@@ -13,7 +13,7 @@ def fetch_season_rows(season):
     """
     url = NFLVERSE_STATS_URL_TMPL.format(season=season)
     try:
-        resp = requests.get(url)
+        resp = requests.get(url, timeout=30)
         resp.raise_for_status()
     except requests.RequestException:
         return []
