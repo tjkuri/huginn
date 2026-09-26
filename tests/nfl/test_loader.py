@@ -54,3 +54,16 @@ class TestLoadPredictions:
         predictions = load_predictions(tmp_path, weeks_back=1)
         assert len(predictions) == 1
         assert predictions[0]["week"] == 5
+
+    def test_weeks_back_keeps_all_files_in_the_most_recent_distinct_week(self, tmp_path):
+        # weeks_back dedupes on distinct (season, week) pairs via a set, not by file count —
+        # two files sharing the same (season, week) must both survive a weeks_back=1 filter.
+        pred_wk4_other_player = dict(PRED_2, player_id="00-9999999", player_name="Other QB")
+        _write(tmp_path, "2026-wk03-00-0033873.json", PRED_1)
+        _write(tmp_path, "2026-wk04-00-0034857.json", PRED_2)
+        _write(tmp_path, "2026-wk04-00-9999999.json", pred_wk4_other_player)
+
+        predictions = load_predictions(tmp_path, weeks_back=1)
+        assert len(predictions) == 2
+        assert {p["player_id"] for p in predictions} == {"00-0034857", "00-9999999"}
+        assert all(p["week"] == 4 for p in predictions)
