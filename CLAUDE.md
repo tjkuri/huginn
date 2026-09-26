@@ -16,6 +16,14 @@ nba/optimizer/fitness.py         Evaluates candidate config; supports temporal C
 nba/scripts/run_backtest.py      CLI entry point (--days, --team, --json, --cache)
 nba/scripts/run_optimizer.py     Optuna parameter search CLI (--trials, --target, --export)
 tests/nba/                       pytest test suite
+nfl/config.py                    Yggdrasil cache path, nflverse stats URL template
+nfl/data/loader.py               Reads logged prediction snapshots (nflLogger.js), filters by weeks_back/player
+nfl/data/results.py              Fetches nflverse weekly player stats CSV, finds actual passing yards
+nfl/backtest/grader.py           Grades predictions: hit, hypothetical NO_BET hit, abs_error
+nfl/backtest/metrics.py          Aggregates stats: hit rate, by-confidence, NO_BET hypothetical, mean abs error
+nfl/backtest/report.py           Rich terminal output
+nfl/scripts/run_backtest.py      CLI entry point (--weeks-back, --player, --json, --cache)
+tests/nfl/                       pytest test suite
 mlb/                             MLB Monte Carlo simulation engine
   config.py                      Enums, league averages, season config, simulation defaults
   data/models.py                 Typed dataclasses for all MLB data structures
