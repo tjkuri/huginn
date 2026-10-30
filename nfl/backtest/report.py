@@ -75,3 +75,47 @@ def print_report(graded_predictions, metrics):
             _hit_icon(p.get("hit")),
         )
     console.print(table)
+
+
+def print_comparison_report(results):
+    """
+    Side-by-side comparison of multiple strategies' metrics (from compare_strategies).
+    results: dict[str, dict] — strategy name -> compute_metrics() output.
+    """
+    if not results:
+        console.print("[dim]No strategy results to compare.[/]")
+        return
+
+    console.print("\n[bold]NFL Strategy Comparison[/bold]\n")
+
+    overall_table = Table(title="Overall hit rate by strategy")
+    overall_table.add_column("Strategy")
+    overall_table.add_column("n", justify="right")
+    overall_table.add_column("Hit rate", justify="right")
+    for name, metrics in results.items():
+        overall = metrics["overall_hit_rate"]
+        color = "green" if overall["hit_rate"] is not None and overall["hit_rate"] >= 0.5 else "red" if overall["hit_rate"] is not None else "dim"
+        overall_table.add_row(name, str(overall["n"]), f"[{color}]{_fmt_pct(overall['hit_rate'])}[/{color}]")
+    console.print(overall_table)
+
+    all_tiers = sorted({tier for metrics in results.values() for tier in metrics["by_confidence"]})
+    if all_tiers:
+        tier_table = Table(title="By confidence tier")
+        tier_table.add_column("Strategy")
+        for tier in all_tiers:
+            tier_table.add_column(tier, justify="right")
+        for name, metrics in results.items():
+            row = [name]
+            for tier in all_tiers:
+                stats = metrics["by_confidence"].get(tier)
+                row.append(f"{_fmt_pct(stats['hit_rate'])} (n={stats['n']})" if stats else "[dim]-[/]")
+            tier_table.add_row(*row)
+        console.print(tier_table)
+
+    mae_table = Table(title="Mean absolute error")
+    mae_table.add_column("Strategy")
+    mae_table.add_column("MAE (yds)", justify="right")
+    for name, metrics in results.items():
+        mae_table.add_row(name, _fmt_yds(metrics["mean_abs_error"]))
+    console.print(mae_table)
+    console.print()

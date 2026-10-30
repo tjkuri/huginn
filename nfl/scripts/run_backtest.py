@@ -21,6 +21,8 @@ from nfl.data.loader import load_predictions
 from nfl.backtest.grader import grade_all
 from nfl.backtest.metrics import compute_metrics
 from nfl.backtest.report import print_report
+from nfl.backtest.compare import compare_strategies
+from nfl.backtest.report import print_comparison_report
 
 
 def main():
@@ -33,7 +35,14 @@ def main():
                         help="Output raw JSON instead of a formatted report")
     parser.add_argument("--cache", type=str, default=None,
                         help="Override cache directory path")
+    parser.add_argument("--compare-strategies", type=str, default=None, dest="compare_dir",
+                        help="Path to a directory of strategy subdirectories (e.g. ../yggdrasil/cache/nfl-backtest) — compares them side by side instead of grading live predictions")
     args = parser.parse_args()
+
+    if args.compare_dir:
+        results = compare_strategies(Path(args.compare_dir), weeks_back=args.weeks_back, player=args.player)
+        print_comparison_report(results)
+        return
 
     cache_dir = Path(args.cache) if args.cache else YGGDRASIL_CACHE
 
