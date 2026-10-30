@@ -92,10 +92,18 @@ def print_comparison_report(results):
     overall_table.add_column("Strategy")
     overall_table.add_column("n", justify="right")
     overall_table.add_column("Hit rate", justify="right")
+    overall_table.add_column("Gradeable", justify="right")
+    overall_table.add_column("Total", justify="right")
     for name, metrics in results.items():
         overall = metrics["overall_hit_rate"]
         color = "green" if overall["hit_rate"] is not None and overall["hit_rate"] >= 0.5 else "red" if overall["hit_rate"] is not None else "dim"
-        overall_table.add_row(name, str(overall["n"]), f"[{color}]{_fmt_pct(overall['hit_rate'])}[/{color}]")
+        overall_table.add_row(
+            name,
+            str(overall["n"]),
+            f"[{color}]{_fmt_pct(overall['hit_rate'])}[/{color}]",
+            str(metrics["gradeable"]),
+            str(metrics["total_predictions"]),
+        )
     console.print(overall_table)
 
     all_tiers = sorted({tier for metrics in results.values() for tier in metrics["by_confidence"]})
@@ -119,3 +127,20 @@ def print_comparison_report(results):
         mae_table.add_row(name, _fmt_yds(metrics["mean_abs_error"]))
     console.print(mae_table)
     console.print()
+
+
+def print_common_games_comparison(result):
+    """Companion to print_comparison_report: hit rate restricted to games every strategy
+    actually picked, so a reader can see a same-games comparison, not just each strategy's
+    own (possibly very different) pick set."""
+    n = result.get("n", 0)
+    if n == 0:
+        console.print("[dim]No games where every strategy made a gradeable, actionable pick -- no same-games comparison available.[/]")
+        return
+    table = Table(title=f"Same-games comparison (n={n} games every strategy picked)")
+    table.add_column("Strategy")
+    table.add_column("Hits", justify="right")
+    table.add_column("Hit rate", justify="right")
+    for name, stats in result["by_strategy"].items():
+        table.add_row(name, str(stats["hits"]), _fmt_pct(stats["hit_rate"]))
+    console.print(table)

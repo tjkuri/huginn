@@ -36,3 +36,49 @@ def compare_strategies(backtest_dir, weeks_back=None, player=None):
         results[entry.name] = compute_metrics(graded)
 
     return results
+
+
+def compute_common_games_comparison(backtest_dir, weeks_back=None, player=None):
+    """
+    Among games where EVERY strategy subdirectory under backtest_dir produced a gradeable,
+    actionable pick (hit is not None), compute each strategy's hit rate restricted to that
+    common set. compare_strategies alone can't answer "which strategy actually wins on the
+    same games" -- each strategy's own hit rate there is computed over ITS OWN pick set, which
+    can differ substantially from another strategy's pick set (confirmed on real data: two
+    strategies' actionable picks overlapped on only 12 of 30+19 total picks). This function
+    answers that narrower, more defensible question instead.
+
+    Returns: {"n": <size of the common gradeable+actionable set>,
+              "by_strategy": {name: {"n": int, "hits": int, "hit_rate": float|None}}}
+    Empty/degenerate inputs return {"n": 0, "by_strategy": {}}.
+    """
+    base = Path(backtest_dir)
+    if not base.exists():
+        return {"n": 0, "by_strategy": {}}
+
+    strategy_dirs = [e for e in sorted(base.iterdir()) if e.is_dir()]
+    if not strategy_dirs:
+        return {"n": 0, "by_strategy": {}}
+
+    graded_by_strategy = {}
+    for entry in strategy_dirs:
+        predictions = load_predictions(entry, weeks_back=weeks_back, player=player)
+        graded = grade_all(predictions)
+        graded_by_strategy[entry.name] = {
+            (g["season"], g["week"], g["player_id"]): g["hit"]
+            for g in graded if g["hit"] is not None
+        }
+
+    common_keys = None
+    for keyed in graded_by_strategy.values():
+        keys = set(keyed.keys())
+        common_keys = keys if common_keys is None else (common_keys & keys)
+    common_keys = common_keys or set()
+
+    by_strategy = {}
+    for name, keyed in graded_by_strategy.items():
+        n = len(common_keys)
+        hits = sum(1 for k in common_keys if keyed[k])
+        by_strategy[name] = {"n": n, "hits": hits, "hit_rate": round(hits / n, 4) if n else None}
+
+    return {"n": len(common_keys), "by_strategy": by_strategy}

@@ -21,8 +21,8 @@ from nfl.data.loader import load_predictions
 from nfl.backtest.grader import grade_all
 from nfl.backtest.metrics import compute_metrics
 from nfl.backtest.report import print_report
-from nfl.backtest.compare import compare_strategies
-from nfl.backtest.report import print_comparison_report
+from nfl.backtest.compare import compare_strategies, compute_common_games_comparison
+from nfl.backtest.report import print_comparison_report, print_common_games_comparison
 
 
 def main():
@@ -42,6 +42,8 @@ def main():
     if args.compare_dir:
         results = compare_strategies(Path(args.compare_dir), weeks_back=args.weeks_back, player=args.player)
         print_comparison_report(results)
+        common = compute_common_games_comparison(Path(args.compare_dir), weeks_back=args.weeks_back, player=args.player)
+        print_common_games_comparison(common)
         return
 
     cache_dir = Path(args.cache) if args.cache else YGGDRASIL_CACHE
