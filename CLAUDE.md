@@ -21,8 +21,9 @@ nfl/data/loader.py               Reads logged prediction snapshots (nflLogger.js
 nfl/data/results.py              Fetches nflverse weekly player stats CSV, finds actual passing yards
 nfl/backtest/grader.py           Grades predictions: hit, hypothetical NO_BET hit, abs_error
 nfl/backtest/metrics.py          Aggregates stats: hit rate, by-confidence, NO_BET hypothetical, mean abs error
+nfl/backtest/compare.py          Pure orchestration: grades multiple strategy dirs through the unchanged pipeline, compares them (+ same-games comparison)
 nfl/backtest/report.py           Rich terminal output
-nfl/scripts/run_backtest.py      CLI entry point (--weeks-back, --player, --json, --cache)
+nfl/scripts/run_backtest.py      CLI entry point (--weeks-back, --player, --json, --cache, --compare-strategies)
 tests/nfl/                       pytest test suite
 mlb/                             MLB Monte Carlo simulation engine
   config.py                      Enums, league averages, season config, simulation defaults
