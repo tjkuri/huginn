@@ -56,3 +56,49 @@ class TestCompareStrategies:
 
         results = compare_strategies(tmp_path)
         assert set(results.keys()) == {"baseline"}
+
+
+def _graded_stub(hit_by_week):
+    """grade_all stand-in: marks each prediction's hit from its week, no network."""
+    def fake(preds):
+        return [{**p, "actual_yards": 250.0, "hit": hit_by_week[p["week"]],
+                 "hypothetical_hit": None, "abs_error": 5.0} for p in preds]
+    return fake
+
+
+class TestOutOfSample:
+    def test_counts_only_weeks_from_the_strategys_start(self, tmp_path, monkeypatch):
+        oos = {"season": 2026, "week": 8}
+        _write(tmp_path / "fade", "2026-wk03-a.json", dict(PRED, week=3, player_id="a", out_of_sample_from=oos))
+        _write(tmp_path / "fade", "2026-wk08-b.json", dict(PRED, week=8, player_id="b", out_of_sample_from=oos))
+        _write(tmp_path / "fade", "2026-wk09-c.json", dict(PRED, week=9, player_id="c", out_of_sample_from=oos))
+        import nfl.backtest.compare as compare_module
+        monkeypatch.setattr(compare_module, "grade_all", _graded_stub({3: True, 8: False, 9: True}))
+
+        results = compare_strategies(tmp_path)
+
+        assert results["fade"]["overall_hit_rate"]["n"] == 3          # full record still includes week 3
+        oos_result = results["fade"]["out_of_sample"]
+        assert oos_result["from"] == oos
+        assert oos_result["overall_hit_rate"] == {"n": 2, "hit_rate": 0.5}  # weeks 8 and 9 only
+
+    def test_missing_stamp_means_no_out_of_sample_record(self, tmp_path, monkeypatch):
+        _write(tmp_path / "old", "2026-wk03-a.json", PRED)  # predates the out_of_sample_from field
+        import nfl.backtest.compare as compare_module
+        monkeypatch.setattr(compare_module, "grade_all", _graded_stub({3: True}))
+
+        results = compare_strategies(tmp_path)
+
+        assert results["old"]["out_of_sample"] is None
+
+    def test_later_stamp_wins_when_files_disagree(self, tmp_path, monkeypatch):
+        # Moving a strategy's start later must never count earlier weeks; take the latest stamp.
+        _write(tmp_path / "s", "2026-wk08-a.json", dict(PRED, week=8, player_id="a", out_of_sample_from={"season": 2026, "week": 8}))
+        _write(tmp_path / "s", "2026-wk09-b.json", dict(PRED, week=9, player_id="b", out_of_sample_from={"season": 2026, "week": 9}))
+        import nfl.backtest.compare as compare_module
+        monkeypatch.setattr(compare_module, "grade_all", _graded_stub({8: True, 9: True}))
+
+        results = compare_strategies(tmp_path)
+
+        assert results["s"]["out_of_sample"]["from"] == {"season": 2026, "week": 9}
+        assert results["s"]["out_of_sample"]["overall_hit_rate"]["n"] == 1

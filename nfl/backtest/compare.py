@@ -20,8 +20,10 @@ def compare_strategies(backtest_dir, weeks_back=None, player=None):
             (e.g. yggdrasil/cache/nfl-backtest/).
         weeks_back: forwarded to load_predictions.
         player: forwarded to load_predictions.
-    Returns: dict[str, dict] — strategy name -> compute_metrics() output. Empty dict if
-        backtest_dir doesn't exist or has no subdirectories.
+    Returns: dict[str, dict] — strategy name -> compute_metrics() output, plus an
+        "out_of_sample" key: compute_metrics() over only the weeks on or after the strategy's
+        out_of_sample_from stamp (with that stamp under "from"), or None if its files carry no
+        stamp. Empty dict if backtest_dir doesn't exist or has no subdirectories.
     """
     base = Path(backtest_dir)
     if not base.exists():
@@ -33,9 +35,27 @@ def compare_strategies(backtest_dir, weeks_back=None, player=None):
             continue
         predictions = load_predictions(entry, weeks_back=weeks_back, player=player)
         graded = grade_all(predictions)
-        results[entry.name] = compute_metrics(graded)
+        metrics = compute_metrics(graded)
+        metrics["out_of_sample"] = _out_of_sample_metrics(graded)
+        results[entry.name] = metrics
 
     return results
+
+
+def _out_of_sample_metrics(graded):
+    """
+    Metrics over only the games a strategy could not have been fitted to. A strategy designed
+    after looking at past results will look good on those same results, so Yggdrasil stamps
+    each strategy's output with the first week it may honestly be judged on
+    (out_of_sample_from, defined in services/nflBacktestStrategies.js). If files disagree --
+    say the start was moved later -- the latest stamp wins, so earlier weeks never sneak back in.
+    """
+    stamps = [g["out_of_sample_from"] for g in graded if g.get("out_of_sample_from")]
+    if not stamps:
+        return None
+    start = max(stamps, key=lambda s: (s["season"], s["week"]))
+    since = [g for g in graded if (g["season"], g["week"]) >= (start["season"], start["week"])]
+    return {"from": start, **compute_metrics(since)}
 
 
 def compute_common_games_comparison(backtest_dir, weeks_back=None, player=None):

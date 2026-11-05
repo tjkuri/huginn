@@ -106,6 +106,25 @@ def print_comparison_report(results):
         )
     console.print(overall_table)
 
+    oos_rows = [(name, m["out_of_sample"]) for name, m in results.items() if m.get("out_of_sample")]
+    if oos_rows:
+        oos_table = Table(title="Out-of-sample: only weeks after each strategy was proposed")
+        oos_table.add_column("Strategy")
+        oos_table.add_column("Judged from", justify="right")
+        oos_table.add_column("n", justify="right")
+        oos_table.add_column("Hit rate", justify="right")
+        for name, oos in oos_rows:
+            overall = oos["overall_hit_rate"]
+            color = "green" if overall["hit_rate"] is not None and overall["hit_rate"] >= 0.5 else "red" if overall["hit_rate"] is not None else "dim"
+            start = oos["from"]
+            oos_table.add_row(
+                name,
+                f"{start['season']} wk{start['week']}",
+                str(overall["n"]),
+                f"[{color}]{_fmt_pct(overall['hit_rate'])}[/{color}]",
+            )
+        console.print(oos_table)
+
     all_tiers = sorted({tier for metrics in results.values() for tier in metrics["by_confidence"]})
     if all_tiers:
         tier_table = Table(title="By confidence tier")
